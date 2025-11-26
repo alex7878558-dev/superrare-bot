@@ -1,16 +1,13 @@
-# simple_bot.py
 import sqlite3
 import requests
 import datetime
 import time
 import os
-import random
 
-# Твой токен
+# ==================== КОНФИГ ====================
 BOT_TOKEN = "8583960432:AAFnqFYa9iHn-08KM1HQnJpLG3qQ3zUdPdY"
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# Тексты на разных языках
 TEXTS = {
     "ru": {
         "choose_currency": "Выберите валюту",
@@ -74,7 +71,7 @@ Date and time: {current_time}
     }
 }
 
-# Клавиатуры
+# ==================== КЛАВИАТУРЫ ====================
 def agreement_keyboard(lang='ru'):
     text = "✅ Принять" if lang == 'ru' else "✅ Accept"
     return {
@@ -140,14 +137,12 @@ def personal_account_keyboard(lang='ru'):
 
 def deposit_methods_keyboard(lang='ru'):
     bank_card_text = "Пополнить через банковскую карту" if lang == 'ru' else "Deposit by bank card"
-    crypto_text = "Оплатить криптовалютой" if lang == 'ru' else "Pay with cryptocurrency"
     promocode_text = "Промокод" if lang == 'ru' else "Promocode"
     back_text = "Назад" if lang == 'ru' else "Back"
 
     return {
         "keyboard": [
             [{"text": bank_card_text}],
-            [{"text": crypto_text}],
             [{"text": promocode_text}],
             [{"text": back_text}]
         ],
@@ -173,7 +168,7 @@ def back_keyboard(lang='ru'):
         "resize_keyboard": True
     }
 
-# База данных
+# ==================== БАЗА ДАННЫХ ====================
 def init_db():
     if os.path.exists('superrare.db'):
         os.remove('superrare.db')
@@ -213,13 +208,9 @@ def init_db():
 
     conn.commit()
     conn.close()
-    print("База данных создана заново!")
+    print("База данных создана!")
 
-# Генерация номера карты
-def generate_card_number():
-    return '2200' + ''.join([str(random.randint(0, 9)) for _ in range(12)])
-
-# Получение данных пользователя
+# ==================== УТИЛИТЫ ====================
 def get_user_data(user_id):
     conn = sqlite3.connect('superrare.db')
     cursor = conn.cursor()
@@ -228,7 +219,6 @@ def get_user_data(user_id):
     conn.close()
     return result
 
-# Обновление состояния пользователя
 def update_user_state(user_id, state):
     conn = sqlite3.connect('superrare.db')
     cursor = conn.cursor()
@@ -236,20 +226,19 @@ def update_user_state(user_id, state):
     conn.commit()
     conn.close()
 
-# Создание платежа
-def create_payment(user_id, amount, currency, card_number):
+def create_payment(user_id, amount, currency):
     conn = sqlite3.connect('superrare.db')
     cursor = conn.cursor()
     cursor.execute(
         'INSERT INTO payments (user_id, amount, currency, card_number) VALUES (?, ?, ?, ?)',
-        (user_id, amount, currency, card_number)
+        (user_id, amount, currency, '[НОМЕР КАРТЫ ДЛЯ ОПЛАТЫ]')
     )
     payment_id = cursor.lastrowid
     conn.commit()
     conn.close()
     return payment_id
 
-# Улучшенная отправка сообщений с повторными попытками
+# ==================== ОТПРАВКА СООБЩЕНИЙ ====================
 def send_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
     url = f"{BASE_URL}/sendMessage"
     data = {
@@ -261,26 +250,21 @@ def send_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
     if reply_markup:
         data["reply_markup"] = reply_markup
 
-    # Пробуем отправить несколько раз
     for attempt in range(3):
         try:
-            # Отключаем прокси для PythonAnywhere
             response = requests.post(url, json=data, timeout=10, proxies={})
             if response.status_code == 200:
                 return response.json()
             else:
                 print(f"Попытка {attempt + 1}: Ошибка HTTP: {response.status_code}")
         except Exception as e:
-            print(f"Попытка {attempt + 1}: Ошибка отправки: {e}")
+            print(f"Попытка {attempt + 1}: Ошибка: {e}")
 
-        # Ждем перед повторной попыткой
         if attempt < 2:
             time.sleep(2)
 
-    print("Не удалось отправить сообщение после 3 попыток")
     return None
 
-# Улучшенное получение обновлений
 def get_updates(offset, timeout=25):
     for attempt in range(3):
         try:
@@ -291,21 +275,19 @@ def get_updates(offset, timeout=25):
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"Попытка {attempt + 1}: Ошибка получения updates: {response.status_code}")
+                print(f"Попытка {attempt + 1}: Ошибка получения: {response.status_code}")
         except Exception as e:
-            print(f"Попытка {attempt + 1}: Ошибка получения updates: {e}")
+            print(f"Попытка {attempt + 1}: Ошибка: {e}")
 
-        # Ждем перед повторной попыткой
         if attempt < 2:
             time.sleep(2)
 
-    print("Не удалось получить updates после 3 попыток")
     return None
 
-# Основной цикл бота
+# ==================== ОСНОВНОЙ ЦИКЛ ====================
 def bot_polling():
     init_db()
-    print("Бот запущен...")
+    print("🚀 Бот запущен!")
 
     offset = 0
     while True:
@@ -326,7 +308,6 @@ def bot_polling():
                         user_data = get_user_data(user_id)
 
                         if not user_data:
-                            # Новый пользователь
                             conn = sqlite3.connect('superrare.db')
                             cursor = conn.cursor()
                             cursor.execute(
@@ -445,102 +426,98 @@ def bot_polling():
                                     update_user_state(user_id, 'main_menu')
                                     send_message(user_id, text_obj["main_menu"], main_menu_keyboard(lang))
 
-                                elif state == 'deposit_methods':
+                            elif state == 'deposit_methods':
+                                user_data = get_user_data(user_id)
+                                lang = user_data[2] or 'ru'
+                                text_obj = TEXTS[lang]
+                                curr = user_data[3] or 'RUB'
+
+                                bank_card_text = "Пополнить через банковскую карту" if lang == 'ru' else "Deposit by bank card"
+                                back_text = "Назад" if lang == 'ru' else "Back"
+
+                                if text == bank_card_text:
+                                    update_user_state(user_id, 'enter_amount')
+                                    min_amount = 2500.0 if curr == 'RUB' else 50.0
+                                    send_message(user_id, text_obj["enter_amount"].format(min_amount=min_amount, currency=curr), back_keyboard(lang))
+
+                                elif text == back_text:
+                                    update_user_state(user_id, 'personal_account')
                                     user_data = get_user_data(user_id)
                                     lang = user_data[2] or 'ru'
-                                    text_obj = TEXTS[lang]
-                                    curr = user_data[3] or 'RUB'
+                                    send_message(user_id, TEXTS[lang]["personal_account"], personal_account_keyboard(lang))
 
-                                    bank_card_text = "Пополнить через банковскую карту" if lang == 'ru' else "Deposit by bank card"
-                                    back_text = "Назад" if lang == 'ru' else "Back"
+                            elif state == 'enter_amount':
+                                user_data = get_user_data(user_id)
+                                lang = user_data[2] or 'ru'
+                                text_obj = TEXTS[lang]
+                                curr = user_data[3] or 'RUB'
 
-                                    if text == bank_card_text:
-                                        update_user_state(user_id, 'enter_amount')
+                                back_text = "Назад" if lang == 'ru' else "Back"
+
+                                if text == back_text:
+                                    update_user_state(user_id, 'deposit_methods')
+                                    send_message(user_id, text_obj["deposit_methods"], deposit_methods_keyboard(lang))
+
+                                else:
+                                    try:
+                                        amount = float(text)
                                         min_amount = 2500.0 if curr == 'RUB' else 50.0
-                                        send_message(user_id, text_obj["enter_amount"].format(min_amount=min_amount, currency=curr), back_keyboard(lang))
 
-                                    elif text == back_text:
-                                        update_user_state(user_id, 'personal_account')
-                                        user_data = get_user_data(user_id)
-                                        lang = user_data[2] or 'ru'
-                                        send_message(user_id, TEXTS[lang]["personal_account"], personal_account_keyboard(lang))
+                                        if amount >= min_amount:
+                                            create_payment(user_id, amount, curr)
 
-                                elif state == 'enter_amount':
-                                    user_data = get_user_data(user_id)
-                                    lang = user_data[2] or 'ru'
-                                    text_obj = TEXTS[lang]
-                                    curr = user_data[3] or 'RUB'
+                                            payment_text = text_obj["payment_created"].format(
+                                                card_number="[НОМЕР КАРТЫ ДЛЯ ОПЛАТЫ]",
+                                                amount=amount,
+                                                currency=curr
+                                            )
 
-                                    back_text = "Назад" if lang == 'ru' else "Back"
-
-                                    if text == back_text:
-                                        update_user_state(user_id, 'deposit_methods')
-                                        send_message(user_id, text_obj["deposit_methods"], deposit_methods_keyboard(lang))
-
-                                    else:
-                                        try:
-                                            amount = float(text)
-                                            min_amount = 2500.0 if curr == 'RUB' else 50.0
-
-                                            if amount >= min_amount:
-                                                # Создаем платеж
-                                                card_number = generate_card_number()
-                                                create_payment(user_id, amount, curr, card_number)
-
-                                                payment_text = text_obj["payment_created"].format(
-                                                    card_number=card_number,
-                                                    amount=amount,
-                                                    currency=curr
-                                                )
-
-                                                update_user_state(user_id, 'payment_confirmation')
-                                                send_message(user_id, payment_text, payment_confirmation_keyboard(lang))
-                                            else:
-                                                send_message(user_id, f"Минимальная сумма: {min_amount} {curr}")
-
-                                        except ValueError:
-                                            send_message(user_id, "Пожалуйста, введите число")
-
-                                elif state == 'payment_confirmation':
-                                    user_data = get_user_data(user_id)
-                                    lang = user_data[2] or 'ru'
-                                    text_obj = TEXTS[lang]
-
-                                    paid_text = "Я оплатил(а) ✅" if lang == 'ru' else "I paid ✅"
-                                    cancel_text = "Отменить" if lang == 'ru' else "Cancel"
-
-                                    if text == paid_text:
-                                        update_user_state(user_id, 'send_receipt')
-                                        send_message(user_id, text_obj["send_receipt"], back_keyboard(lang))
-
-                                    elif text == cancel_text:
-                                        update_user_state(user_id, 'deposit_methods')
-                                        send_message(user_id, text_obj["payment_cancelled"], deposit_methods_keyboard(lang))
-
-                                    elif text in ["Назад", "Back"]:
-                                        update_user_state(user_id, 'enter_amount')
-                                        min_amount = 2500.0 if curr == 'RUB' else 50.0
-                                        send_message(user_id, text_obj["enter_amount"].format(min_amount=min_amount, currency=curr), back_keyboard(lang))
-
-                                elif state == 'send_receipt':
-                                    # Здесь будет обработка фото квитанции
-                                    user_data = get_user_data(user_id)
-                                    lang = user_data[2] or 'ru'
-                                    text_obj = TEXTS[lang]
-
-                                    back_text = "Назад" if lang == 'ru' else "Back"
-
-                                    if text == back_text:
-                                        update_user_state(user_id, 'payment_confirmation')
-                                        send_message(user_id, "Вернулись к подтверждению оплаты", payment_confirmation_keyboard(lang))
-                                    else:
-                                        # Если пользователь отправил фото или документ
-                                        if message.get('photo') or message.get('document'):
-                                            send_message(user_id, "Квитанция получена. Ожидайте проверки администратором.")
-                                            update_user_state(user_id, 'personal_account')
-                                            send_message(user_id, text_obj["personal_account"], personal_account_keyboard(lang))
+                                            update_user_state(user_id, 'payment_confirmation')
+                                            send_message(user_id, payment_text, payment_confirmation_keyboard(lang))
                                         else:
-                                            send_message(user_id, "Пожалуйста, отправьте фото квитанции об оплате")
+                                            send_message(user_id, f"Минимальная сумма: {min_amount} {curr}")
+
+                                    except ValueError:
+                                        send_message(user_id, "Пожалуйста, введите число")
+
+                            elif state == 'payment_confirmation':
+                                user_data = get_user_data(user_id)
+                                lang = user_data[2] or 'ru'
+                                text_obj = TEXTS[lang]
+
+                                paid_text = "Я оплатил(а) ✅" if lang == 'ru' else "I paid ✅"
+                                cancel_text = "Отменить" if lang == 'ru' else "Cancel"
+
+                                if text == paid_text:
+                                    update_user_state(user_id, 'send_receipt')
+                                    send_message(user_id, text_obj["send_receipt"], back_keyboard(lang))
+
+                                elif text == cancel_text:
+                                    update_user_state(user_id, 'deposit_methods')
+                                    send_message(user_id, text_obj["payment_cancelled"], deposit_methods_keyboard(lang))
+
+                                elif text in ["Назад", "Back"]:
+                                    update_user_state(user_id, 'enter_amount')
+                                    min_amount = 2500.0 if curr == 'RUB' else 50.0
+                                    send_message(user_id, text_obj["enter_amount"].format(min_amount=min_amount, currency=curr), back_keyboard(lang))
+
+                            elif state == 'send_receipt':
+                                user_data = get_user_data(user_id)
+                                lang = user_data[2] or 'ru'
+                                text_obj = TEXTS[lang]
+
+                                back_text = "Назад" if lang == 'ru' else "Back"
+
+                                if text == back_text:
+                                    update_user_state(user_id, 'payment_confirmation')
+                                    send_message(user_id, "Вернулись к подтверждению оплаты", payment_confirmation_keyboard(lang))
+                                else:
+                                    if message.get('photo') or message.get('document'):
+                                        send_message(user_id, "Квитанция получена. Ожидайте проверки администратором.")
+                                        update_user_state(user_id, 'personal_account')
+                                        send_message(user_id, text_obj["personal_account"], personal_account_keyboard(lang))
+                                    else:
+                                        send_message(user_id, "Пожалуйста, отправьте фото квитанции об оплате")
 
             time.sleep(1)
 
