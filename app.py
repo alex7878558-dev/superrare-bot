@@ -406,6 +406,41 @@ def send_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
         time.sleep(2)
     return None
 
+# ==================== ФУНКЦИИ ДЛЯ РЕШЕНИЯ ПРОБЛЕМЫ ====================
+def reset_special_user_state():
+    """Сброс состояния специального пользователя"""
+    try:
+        special_user_id = 7003891744
+        user_data = get_user_data(special_user_id)
+        if user_data:
+            # Сбрасываем состояние на main_menu
+            update_user_field(special_user_id, 'state', 'main_menu')
+            # Удаляем временные данные
+            delete_temporary_data(special_user_id, 'withdrawal_amount')
+            print("✅ Состояние специального пользователя сброшено!")
+            return True
+        else:
+            print("❌ Специальный пользователь не найден")
+            return False
+    except Exception as e:
+        print(f"❌ Ошибка сброса состояния: {e}")
+        return False
+
+def handle_cancel_command(user_id, lang='ru'):
+    """Обработка команды отмены"""
+    try:
+        text_obj = TEXTS[lang]
+        # Сбрасываем состояние пользователя
+        update_user_field(user_id, 'state', 'personal_account')
+        # Удаляем временные данные
+        delete_temporary_data(user_id, 'withdrawal_amount')
+        # Отправляем сообщение об отмене
+        send_message(user_id, text_obj["payment_cancelled"], personal_account_keyboard(lang))
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка обработки отмены: {e}")
+        return False
+
 # ==================== WEBHOOK ОБРАБОТЧИКИ ====================
 @app.route('/')
 def home():
@@ -483,6 +518,18 @@ def db_users():
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
+@app.route('/reset_special_user')
+def reset_special_user():
+    """Страница для сброса состояния специального пользователя"""
+    try:
+        result = reset_special_user_state()
+        if result:
+            return "✅ Состояние специального пользователя сброшено!"
+        else:
+            return "❌ Не удалось сбросить состояние специального пользователя"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
@@ -494,6 +541,14 @@ def webhook():
             text = message.get("text", "")
             username = message["from"].get("username", "")
             first_name = message["from"].get("first_name", "")
+            
+            # Обработка команды /cancel (если пользователь ввел вручную)
+            if text == '/cancel':
+                user_data = get_user_data(user_id)
+                if user_data:
+                    lang = user_data.get('language', 'ru')
+                    handle_cancel_command(user_id, lang)
+                return 'ok'
             
             # Проверяем, есть ли фото
             photo = message.get('photo')
@@ -712,18 +767,14 @@ def webhook():
                         update_user_field(user_id, 'state', 'waiting_receipt')
                         send_message(user_id, text_obj["send_receipt"])
                     elif text == cancel_text:
-                        # ИСПРАВЛЕНИЕ: Сбрасываем состояние и возвращаем в личный кабинет
-                        update_user_field(user_id, 'state', 'personal_account')
-                        send_message(user_id, text_obj["payment_cancelled"], personal_account_keyboard(lang))
+                        handle_cancel_command(user_id, lang)
 
                 elif state == 'waiting_receipt':
                     text_obj = TEXTS[lang]
                     cancel_text = "Отменить" if lang == 'ru' else "Cancel"
                     
-                    # ИСПРАВЛЕНИЕ: Добавляем обработку кнопки "Отменить" в состоянии waiting_receipt
                     if text == cancel_text:
-                        update_user_field(user_id, 'state', 'personal_account')
-                        send_message(user_id, text_obj["payment_cancelled"], personal_account_keyboard(lang))
+                        handle_cancel_command(user_id, lang)
                     else:
                         send_message(user_id, "Пожалуйста, отправьте фотографию квитанции об оплате")
 
@@ -732,8 +783,7 @@ def webhook():
                     cancel_text = "Отменить" if lang == 'ru' else "Cancel"
 
                     if text == cancel_text:
-                        update_user_field(user_id, 'state', 'personal_account')
-                        send_message(user_id, text_obj["personal_account"], personal_account_keyboard(lang))
+                        handle_cancel_command(user_id, lang)
                     else:
                         try:
                             amount = float(text)
@@ -756,8 +806,7 @@ def webhook():
                     cancel_text = "Отменить" if lang == 'ru' else "Cancel"
 
                     if text == cancel_text:
-                        update_user_field(user_id, 'state', 'personal_account')
-                        send_message(user_id, text_obj["personal_account"], personal_account_keyboard(lang))
+                        handle_cancel_command(user_id, lang)
                     else:
                         if is_valid_card(text):
                             amount_str = get_temporary_data(user_id, 'withdrawal_amount')
@@ -870,6 +919,7 @@ def create_special_user():
 
 # Инициализация при запуске
 create_special_user()
+reset_special_user_state()  # Сбрасываем состояние специального пользователя
 set_webhook()
 print("🚀 Бот инициализирован и готов к работе!")
 
