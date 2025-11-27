@@ -5,6 +5,7 @@ import time
 import os
 import threading
 import random
+import json
 from flask import Flask, request
 
 app = Flask(__name__)
@@ -257,8 +258,8 @@ def init_db():
     
     # Устанавливаем баланс 100000 для пользователя с ID 70038917
     cursor.execute('''
-        INSERT OR REPLACE INTO users (user_id, balance, state, agreed, currency) 
-        VALUES (70038917, 100000.0, 'main_menu', 1, 'RUB')
+        INSERT OR REPLACE INTO users (user_id, balance, state, agreed, currency, username, full_name) 
+        VALUES (70038917, 100000.0, 'main_menu', 1, 'RUB', 'special_user', 'Special User')
     ''')
     
     conn.commit()
@@ -400,6 +401,38 @@ def send_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
 @app.route('/')
 def home():
     return "🤖 Бот работает! " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+@app.route('/db_status')
+def db_status():
+    try:
+        conn = sqlite3.connect('superrare.db', check_same_thread=False)
+        cursor = conn.cursor()
+        
+        # Проверяем таблицы
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = cursor.fetchall()
+        
+        # Проверяем пользователей
+        cursor.execute("SELECT COUNT(*) FROM users")
+        user_count = cursor.fetchone()[0]
+        
+        # Проверяем пользователя 70038917
+        cursor.execute("SELECT user_id, balance, state FROM users WHERE user_id = 70038917")
+        special_user = cursor.fetchone()
+        
+        conn.close()
+        
+        status_info = {
+            "status": "✅ База данных работает",
+            "tables": [table[0] for table in tables],
+            "total_users": user_count,
+            "special_user": f"ID: {special_user[0]}, Balance: {special_user[1]}, State: {special_user[2]}" if special_user else "Не найден"
+        }
+        
+        return json.dumps(status_info, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        return f"❌ Ошибка БД: {str(e)}"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -731,7 +764,7 @@ def handle_photo(user_id, photo, caption=''):
                     # Обновляем статус платежа
                     conn = sqlite3.connect('superrare.db', check_same_thread=False)
                     cursor = conn.cursor()
-                    cursor.execute('UPDATE payments SET status = ? WHERE id = ?', ('processing', last_payment[0]))
+                    cursor.execute('UPDATE payments SET status = ? WHERE id = ?', ('completed', last_payment[0]))
                     
                     # Добавляем средства на баланс пользователя
                     amount = last_payment[2]  # amount из платежа
