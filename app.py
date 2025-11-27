@@ -43,8 +43,7 @@ keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
 keep_alive_thread.start()
 print("🚀 Функция самопробуждения запущена!")
 
-# ==================== ОСТАЛЬНОЙ КОД ОСТАЕТСЯ БЕЗ ИЗМЕНЕНИЙ ====================
-
+# ==================== ТЕКСТЫ ====================
 TEXTS = {
     "ru": {
         "choose_currency": "Выберите валюту",
@@ -74,7 +73,21 @@ TEXTS = {
 Ваш айди: {user_id}
 
 Дата и время: {current_time}
----"""
+---""",
+        "settings": "⚙️ Настройки",
+        "settings_text": """**SuperRare | NFT Market**
+
+---
+
+## Настройки
+
+Язык: {language}
+Валюта: {currency}
+
+---""",
+        "language": "Язык",
+        "currency_setting": "Валюта",
+        "back": "Вернуться"
     },
     "en": {
         "choose_currency": "Choose currency",
@@ -104,7 +117,21 @@ Verification: {verification_status}
 Your ID: {user_id}
 
 Date and time: {current_time}
----"""
+---""",
+        "settings": "⚙️ Settings",
+        "settings_text": """**SuperRare | NFT Market**
+
+---
+
+## Settings
+
+Language: {language}
+Currency: {currency}
+
+---""",
+        "language": "Language",
+        "currency_setting": "Currency",
+        "back": "Back"
     }
 }
 
@@ -135,10 +162,10 @@ def currency_keyboard():
     }
 
 def main_menu_keyboard(lang='ru'):
-    personal_text = "Личный кабинет" if lang == 'ru' else "Personal account"
-    nft_text = "NFT" if lang == 'ru' else "NFT"
-    info_text = "Инфо" if lang == 'ru' else "Info"
-    support_text = "Тех. Поддержка" if lang == 'ru' else "Support"
+    personal_text = TEXTS[lang]["personal_account"]
+    nft_text = TEXTS[lang]["nft"]
+    info_text = TEXTS[lang]["info"]
+    support_text = TEXTS[lang]["support"]
 
     return {
         "keyboard": [
@@ -158,7 +185,7 @@ def personal_account_keyboard(lang='ru'):
     favorites_text = "Избранное" if lang == 'ru' else "Favorites"
     my_nft_text = "Мои NFT" if lang == 'ru' else "My NFT"
     create_nft_text = "Создать NFT" if lang == 'ru' else "Create NFT"
-    settings_text = "Настройки" if lang == 'ru' else "Settings"
+    settings_text = TEXTS[lang]["settings"]
     menu_text = "Меню" if lang == 'ru' else "Menu"
 
     return {
@@ -168,6 +195,20 @@ def personal_account_keyboard(lang='ru'):
             [{"text": favorites_text}, {"text": my_nft_text}],
             [{"text": create_nft_text}],
             [{"text": settings_text}, {"text": menu_text}]
+        ],
+        "resize_keyboard": True
+    }
+
+def settings_keyboard(lang='ru'):
+    language_text = TEXTS[lang]["language"]
+    currency_text = TEXTS[lang]["currency_setting"]
+    back_text = TEXTS[lang]["back"]
+
+    return {
+        "keyboard": [
+            [{"text": language_text}],
+            [{"text": currency_text}],
+            [{"text": back_text}]
         ],
         "resize_keyboard": True
     }
@@ -199,7 +240,7 @@ def payment_confirmation_keyboard(lang='ru'):
     }
 
 def back_keyboard(lang='ru'):
-    back_text = "Назад" if lang == 'ru' else "Back"
+    back_text = TEXTS[lang]["back"]
     return {
         "keyboard": [[{"text": back_text}]],
         "resize_keyboard": True
@@ -256,10 +297,32 @@ def get_user_data(user_id):
     conn.close()
     return result
 
+def get_full_user_data(user_id):
+    conn = sqlite3.connect('superrare.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result
+
 def update_user_state(user_id, state):
     conn = sqlite3.connect('superrare.db')
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET state = ? WHERE user_id = ?', (state, user_id))
+    conn.commit()
+    conn.close()
+
+def update_user_language(user_id, language):
+    conn = sqlite3.connect('superrare.db')
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET language = ? WHERE user_id = ?', (language, user_id))
+    conn.commit()
+    conn.close()
+
+def update_user_currency(user_id, currency):
+    conn = sqlite3.connect('superrare.db')
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET currency = ? WHERE user_id = ?', (currency, user_id))
     conn.commit()
     conn.close()
 
@@ -376,31 +439,20 @@ def bot_polling():
 
                             elif state == 'language':
                                 if text == "Русский":
-                                    conn = sqlite3.connect('superrare.db')
-                                    cursor = conn.cursor()
-                                    cursor.execute('UPDATE users SET language = ? WHERE user_id = ?', ('ru', user_id))
-                                    conn.commit()
-                                    conn.close()
+                                    update_user_language(user_id, 'ru')
                                     update_user_state(user_id, 'currency')
                                     send_message(user_id, "Выберите валюту", currency_keyboard())
-
+                                    
                                 elif text == "English":
-                                    conn = sqlite3.connect('superrare.db')
-                                    cursor = conn.cursor()
-                                    cursor.execute('UPDATE users SET language = ? WHERE user_id = ?', ('en', user_id))
-                                    conn.commit()
-                                    conn.close()
+                                    update_user_language(user_id, 'en')
                                     update_user_state(user_id, 'currency')
                                     send_message(user_id, "Choose currency", currency_keyboard())
 
                             elif state == 'currency':
                                 if text in ["RUB", "UAH", "KZT", "BYN", "EUR", "USD"]:
-                                    conn = sqlite3.connect('superrare.db')
-                                    cursor = conn.cursor()
-                                    cursor.execute('UPDATE users SET currency = ?, state = ? WHERE user_id = ?', (text, 'main_menu', user_id))
-                                    conn.commit()
-                                    conn.close()
-
+                                    update_user_currency(user_id, text)
+                                    update_user_state(user_id, 'main_menu')
+                                    
                                     user_data = get_user_data(user_id)
                                     lang = user_data[2] or 'ru'
                                     send_message(user_id, TEXTS[lang]["main_menu"], main_menu_keyboard(lang))
@@ -450,6 +502,7 @@ def bot_polling():
                                 deposit_text = "Пополнить" if lang == 'ru' else "Deposit"
                                 menu_text = "Меню" if lang == 'ru' else "Menu"
                                 back_text = "Назад" if lang == 'ru' else "Back"
+                                settings_text = text_obj["settings"]
 
                                 if text == deposit_text:
                                     update_user_state(user_id, 'deposit_methods')
@@ -463,6 +516,92 @@ def bot_polling():
                                     update_user_state(user_id, 'main_menu')
                                     send_message(user_id, text_obj["main_menu"], main_menu_keyboard(lang))
 
+                                elif text == settings_text:
+                                    # Показываем настройки
+                                    full_user_data = get_full_user_data(user_id)
+                                    if full_user_data:
+                                        user_language = "Русский" if full_user_data[3] == 'ru' else "English"
+                                        user_currency = full_user_data[4] or 'RUB'
+                                        
+                                        settings_message = text_obj["settings_text"].format(
+                                            language=user_language,
+                                            currency=user_currency
+                                        )
+                                        
+                                        send_message(user_id, settings_message, settings_keyboard(lang))
+                                        update_user_state(user_id, 'settings')
+
+                            elif state == 'settings':
+                                user_data = get_user_data(user_id)
+                                lang = user_data[2] or 'ru'
+                                text_obj = TEXTS[lang]
+
+                                language_text = text_obj["language"]
+                                currency_text = text_obj["currency_setting"]
+                                back_text = text_obj["back"]
+
+                                if text == language_text:
+                                    update_user_state(user_id, 'change_language')
+                                    send_message(user_id, "Выберите язык:", language_keyboard())
+
+                                elif text == currency_text:
+                                    update_user_state(user_id, 'change_currency')
+                                    send_message(user_id, "Выберите валюту:", currency_keyboard())
+
+                                elif text == back_text:
+                                    update_user_state(user_id, 'personal_account')
+                                    # Возвращаемся в личный кабинет
+                                    conn = sqlite3.connect('superrare.db')
+                                    cursor = conn.cursor()
+                                    cursor.execute('SELECT balance, withdrawal_balance, turnover, verified, currency FROM users WHERE user_id = ?', (user_id,))
+                                    user = cursor.fetchone()
+                                    conn.close()
+
+                                    if user:
+                                        balance, withdrawal_balance, turnover, verified, currency = user
+                                        verification_status = "✅ Верифицирован" if verified else "💬 Не верифицирован"
+                                        if lang == 'en':
+                                            verification_status = "✅ Verified" if verified else "💬 Not verified"
+
+                                        current_time = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+
+                                        account_text = text_obj["personal_account_text"].format(
+                                            balance=balance,
+                                            withdrawal_balance=withdrawal_balance,
+                                            turnover=turnover,
+                                            verification_status=verification_status,
+                                            user_id=user_id,
+                                            current_time=current_time,
+                                            currency=currency
+                                        )
+
+                                        send_message(user_id, account_text, personal_account_keyboard(lang))
+
+                            elif state == 'change_language':
+                                if text == "Русский":
+                                    update_user_language(user_id, 'ru')
+                                    update_user_state(user_id, 'settings')
+                                    send_message(user_id, "Язык изменен на Русский", settings_keyboard('ru'))
+                                    
+                                elif text == "English":
+                                    update_user_language(user_id, 'en')
+                                    update_user_state(user_id, 'settings')
+                                    send_message(user_id, "Language changed to English", settings_keyboard('en'))
+
+                            elif state == 'change_currency':
+                                if text in ["RUB", "UAH", "KZT", "BYN", "EUR", "USD"]:
+                                    update_user_currency(user_id, text)
+                                    update_user_state(user_id, 'settings')
+                                    
+                                    user_data = get_user_data(user_id)
+                                    lang = user_data[2] or 'ru'
+                                    currency_name = "Рубль" if text == "RUB" else text
+                                    if lang == 'en':
+                                        currency_name = "Ruble" if text == "RUB" else text
+                                    
+                                    send_message(user_id, f"Валюта изменена на {currency_name}", settings_keyboard(lang))
+
+                            # Остальные состояния (депозит, платежи и т.д.) остаются без изменений
                             elif state == 'deposit_methods':
                                 user_data = get_user_data(user_id)
                                 lang = user_data[2] or 'ru'
