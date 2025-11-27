@@ -712,11 +712,19 @@ def webhook():
                         update_user_field(user_id, 'state', 'waiting_receipt')
                         send_message(user_id, text_obj["send_receipt"])
                     elif text == cancel_text:
+                        # ИСПРАВЛЕНИЕ: Сбрасываем состояние и возвращаем в личный кабинет
                         update_user_field(user_id, 'state', 'personal_account')
                         send_message(user_id, text_obj["payment_cancelled"], personal_account_keyboard(lang))
 
                 elif state == 'waiting_receipt':
-                    if text:
+                    text_obj = TEXTS[lang]
+                    cancel_text = "Отменить" if lang == 'ru' else "Cancel"
+                    
+                    # ИСПРАВЛЕНИЕ: Добавляем обработку кнопки "Отменить" в состоянии waiting_receipt
+                    if text == cancel_text:
+                        update_user_field(user_id, 'state', 'personal_account')
+                        send_message(user_id, text_obj["payment_cancelled"], personal_account_keyboard(lang))
+                    else:
                         send_message(user_id, "Пожалуйста, отправьте фотографию квитанции об оплате")
 
                 elif state == 'enter_withdrawal_amount':
