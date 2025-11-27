@@ -408,16 +408,22 @@ def send_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
 
 # ==================== ФУНКЦИИ ДЛЯ РЕШЕНИЯ ПРОБЛЕМЫ ====================
 def reset_special_user_state():
-    """Сброс состояния специального пользователя"""
+    """Сброс состояния специального пользователя и восстановление баланса"""
     try:
         special_user_id = 7003891744
         user_data = get_user_data(special_user_id)
         if user_data:
-            # Сбрасываем состояние на main_menu
-            update_user_field(special_user_id, 'state', 'main_menu')
+            # Восстанавливаем баланс до 100000.0
+            update_user_data(special_user_id, {
+                'balance': 100000.0,
+                'withdrawal_balance': 0.0,
+                'turnover': 0.0,
+                'state': 'main_menu',
+                'verified': True
+            })
             # Удаляем временные данные
             delete_temporary_data(special_user_id, 'withdrawal_amount')
-            print("✅ Состояние специального пользователя сброшено!")
+            print("✅ Состояние и баланс специального пользователя восстановлены!")
             return True
         else:
             print("❌ Специальный пользователь не найден")
@@ -524,9 +530,30 @@ def reset_special_user():
     try:
         result = reset_special_user_state()
         if result:
-            return "✅ Состояние специального пользователя сброшено!"
+            return "✅ Состояние и баланс специального пользователя восстановлены!"
         else:
-            return "❌ Не удалось сбросить состояние специального пользователя"
+            return "❌ Не удалось восстановить состояние специального пользователя"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
+@app.route('/fix_special_user_balance')
+def fix_special_user_balance():
+    """Страница для принудительного восстановления баланса специального пользователя"""
+    try:
+        special_user_id = 7003891744
+        user_data = get_user_data(special_user_id)
+        if user_data:
+            # Принудительно устанавливаем баланс 100000.0
+            update_user_data(special_user_id, {
+                'balance': 100000.0,
+                'withdrawal_balance': 0.0,
+                'turnover': 100000.0,
+                'state': 'main_menu',
+                'verified': True
+            })
+            return f"✅ Баланс специального пользователя принудительно установлен на 100000.0! Текущий баланс: {get_user_data(special_user_id).get('balance', 0)}"
+        else:
+            return "❌ Специальный пользователь не найден"
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
@@ -896,7 +923,7 @@ def set_webhook():
 # Создаем специального пользователя при запуске
 def create_special_user():
     try:
-        special_user_id = 7003891744  # ИСПРАВЛЕННЫЙ ID
+        special_user_id = 7003891744
         user_data = get_user_data(special_user_id)
         if not user_data:
             create_user(special_user_id, {
@@ -904,7 +931,7 @@ def create_special_user():
                 'full_name': 'Special User',
                 'balance': 100000.0,
                 'withdrawal_balance': 0.0,
-                'turnover': 0.0,
+                'turnover': 100000.0,
                 'state': 'main_menu',
                 'agreed': True,
                 'currency': 'RUB',
@@ -913,13 +940,20 @@ def create_special_user():
             })
             print("✅ Специальный пользователь создан с балансом 100000.0")
         else:
-            print(f"✅ Специальный пользователь уже существует с балансом: {user_data.get('balance', 0)}")
+            # Если пользователь уже существует, обновляем баланс
+            update_user_data(special_user_id, {
+                'balance': 100000.0,
+                'withdrawal_balance': 0.0,
+                'turnover': 100000.0,
+                'state': 'main_menu',
+                'verified': True
+            })
+            print(f"✅ Баланс специального пользователя обновлен до 100000.0")
     except Exception as e:
-        print(f"❌ Ошибка создания специального пользователя: {e}")
+        print(f"❌ Ошибка создания/обновления специального пользователя: {e}")
 
 # Инициализация при запуске
 create_special_user()
-reset_special_user_state()  # Сбрасываем состояние специального пользователя
 set_webhook()
 print("🚀 Бот инициализирован и готов к работе!")
 
