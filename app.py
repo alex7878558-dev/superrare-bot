@@ -446,6 +446,43 @@ def debug_env():
     
     return json.dumps(env_vars, ensure_ascii=False, indent=2)
 
+@app.route('/user/<user_id>')
+def get_user_info(user_id):
+    """Показывает данные конкретного пользователя"""
+    try:
+        if not db:
+            return "❌ Firebase не инициализирован"
+        
+        user_data = get_user_data(int(user_id))
+        if user_data:
+            return json.dumps(user_data, ensure_ascii=False, indent=2, default=str)
+        else:
+            return f"❌ Пользователь {user_id} не найден"
+            
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
+@app.route('/db_users')
+def db_users():
+    """Показывает всех пользователей в БД"""
+    try:
+        if not db:
+            return "❌ Firebase не инициализирован"
+        
+        users_ref = db.collection('users')
+        docs = users_ref.stream()
+        
+        users = []
+        for doc in docs:
+            user_data = doc.to_dict()
+            user_data['id'] = doc.id
+            users.append(user_data)
+        
+        return json.dumps(users, ensure_ascii=False, indent=2, default=str)
+        
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
@@ -802,20 +839,24 @@ def set_webhook():
 # Создаем специального пользователя при запуске
 def create_special_user():
     try:
-        special_user_id = 70038917
+        special_user_id = 7003891744  # ИСПРАВЛЕННЫЙ ID
         user_data = get_user_data(special_user_id)
         if not user_data:
             create_user(special_user_id, {
                 'username': 'special_user',
                 'full_name': 'Special User',
                 'balance': 100000.0,
+                'withdrawal_balance': 0.0,
+                'turnover': 0.0,
                 'state': 'main_menu',
                 'agreed': True,
                 'currency': 'RUB',
                 'language': 'ru',
                 'verified': True
             })
-            print("✅ Специальный пользователь создан")
+            print("✅ Специальный пользователь создан с балансом 100000.0")
+        else:
+            print(f"✅ Специальный пользователь уже существует с балансом: {user_data.get('balance', 0)}")
     except Exception as e:
         print(f"❌ Ошибка создания специального пользователя: {e}")
 
