@@ -3,10 +3,47 @@ import requests
 import datetime
 import time
 import os
+import threading
 
 # ==================== КОНФИГ ====================
 BOT_TOKEN = "8583960432:AAFnqFYa9iHn-08KM1HQnJpLG3qQ3zUdPdY"
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+# ==================== ФУНКЦИЯ САМОПРОБУЖДЕНИЯ ====================
+def keep_alive():
+    """
+    Функция для поддержания бота активным на Render
+    Отправляет запросы к самому себе каждые 10 минут
+    """
+    while True:
+        try:
+            # Получаем URL приложения (для Render)
+            app_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://your-bot.onrender.com')
+            if app_url == 'https://your-bot.onrender.com':
+                # Если URL не установлен, используем локальный для тестов
+                print("⚠️  RENDER_EXTERNAL_URL не установлен, самопробуждение отключено")
+                return
+            
+            # Отправляем запрос к самому себе
+            response = requests.get(app_url, timeout=10)
+            print(f"✅ Самопробуждение: {response.status_code} - {datetime.datetime.now().strftime('%H:%M:%S')}")
+            
+            # Ждем 10 минут до следующего пробуждения
+            time.sleep(600)
+            
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Ошибка самопробуждения: {e}")
+            time.sleep(60)  # Ждем 1 минуту при ошибке
+        except Exception as e:
+            print(f"❌ Неожиданная ошибка: {e}")
+            time.sleep(300)  # Ждем 5 минут при серьезной ошибке
+
+# Запускаем самопробуждение в отдельном потоке
+keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+keep_alive_thread.start()
+print("🚀 Функция самопробуждения запущена!")
+
+# ==================== ОСТАЛЬНОЙ КОД ОСТАЕТСЯ БЕЗ ИЗМЕНЕНИЙ ====================
 
 TEXTS = {
     "ru": {
