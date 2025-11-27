@@ -1,13 +1,13 @@
-import sqlite3
+import os
 import requests
 import datetime
 import time
-import os
 import threading
 import random
 import json
-import base64
 from flask import Flask, request
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 app = Flask(__name__)
 
@@ -15,9 +15,34 @@ app = Flask(__name__)
 BOT_TOKEN = "8583960432:AAFnqFYa9iHn-08KM1HQnJpLG3qQ3zUdPdY"
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# Глобальная база данных в памяти + Telegram Backup
-memory_db = None
-BACKUP_CHAT_ID = "70038917"  # Твой ID для бэкапов
+# Инициализация Firebase
+try:
+    # Создаем credentials из переменных окружения
+    firebase_config = {
+        "type": "service_account",
+        "project_id": os.environ.get("FIREBASE_PROJECT_ID"),
+        "private_key_id": os.environ.get("FIREBASE_PRIVATE_KEY_ID"),
+        "private_key": os.environ.get("FIREBASE_PRIVATE_KEY", "").replace('\\n', '\n'),
+        "client_email": os.environ.get("FIREBASE_CLIENT_EMAIL"),
+        "client_id": os.environ.get("FIREBASE_CLIENT_ID"),
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{os.environ.get('FIREBASE_CLIENT_EMAIL', '').replace('@', '%40')}",
+        "universe_domain": "googleapis.com"
+    }
+    
+    # Проверяем что все переменные есть
+    if not all([firebase_config['project_id'], firebase_config['private_key'], firebase_config['client_email']]):
+        raise Exception("Не все Firebase переменные окружения установлены")
+    
+    cred = credentials.Certificate(firebase_config)
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    print("✅ Firebase инициализирован!")
+except Exception as e:
+    print(f"❌ Ошибка Firebase: {e}")
+    db = None
 
 # ==================== ФУНКЦИЯ САМОПРОБУЖДЕНИЯ ====================
 def keep_alive():
@@ -202,295 +227,166 @@ def back_keyboard(lang='ru'):
     back_text = TEXTS[lang]["back"]
     return {"keyboard": [[{"text": back_text}]], "resize_keyboard": True}
 
-# ==================== БАЗА ДАННЫХ В ПАМЯТИ + TELEGRAM BACKUP ====================
-def init_memory_db():
-    """Инициализирует базу данных в памяти и загружает backup из Telegram"""
-    global memory_db
-    
-    # Создаем базу в памяти
-    memory_db = sqlite3.connect(':memory:', check_same_thread=False)
-    cursor = memory_db.cursor()
-    
-    # Создаем таблицы
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            full_name TEXT,
-            language TEXT DEFAULT 'ru',
-            currency TEXT DEFAULT 'RUB',
-            balance REAL DEFAULT 0.0,
-            withdrawal_balance REAL DEFAULT 0.0,
-            turnover REAL DEFAULT 0.0,
-            verified INTEGER DEFAULT 0,
-            agreed INTEGER DEFAULT 0,
-            state TEXT DEFAULT 'start',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            amount REAL,
-            currency TEXT,
-            card_number TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS withdrawals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            amount REAL,
-            currency TEXT,
-            card_number TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users (user_id)
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS temporary_data (
-            user_id INTEGER,
-            key TEXT,
-            value TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (user_id, key)
-        )
-    ''')
-    
-    # Загружаем backup из Telegram
-    load_telegram_backup()
-    
-    # Создаем пользователя 70038917 если его нет
-    cursor.execute('SELECT 1 FROM users WHERE user_id = 70038917')
-    if not cursor.fetchone():
-        cursor.execute('''
-            INSERT INTO users (user_id, username, full_name, balance, state, agreed, currency) 
-            VALUES (70038917, 'special_user', 'Special User', 100000.0, 'main_menu', 1, 'RUB')
-        ''')
-        save_telegram_backup()
-        print("✅ Пользователь 70038917 создан с балансом 100000.0")
-    
-    memory_db.commit()
-    print("✅ База данных в памяти инициализирована с бэкапом из Telegram!")
-
-def save_telegram_backup():
-    """Сохраняет всю БД в закрепленное сообщение в Telegram"""
-    try:
-        cursor = memory_db.cursor()
-        
-        # Собираем все данные
-        backup_data = {
-            'users': [],
-            'payments': [],
-            'withdrawals': [],
-            'timestamp': datetime.datetime.now().isoformat()
-        }
-        
-        # Пользователи
-        cursor.execute('SELECT * FROM users')
-        columns = [description[0] for description in cursor.description]
-        for row in cursor.fetchall():
-            backup_data['users'].append(dict(zip(columns, row)))
-        
-        # Платежи
-        cursor.execute('SELECT * FROM payments')
-        columns = [description[0] for description in cursor.description]
-        for row in cursor.fetchall():
-            backup_data['payments'].append(dict(zip(columns, row)))
-        
-        # Выводы
-        cursor.execute('SELECT * FROM withdrawals')
-        columns = [description[0] for description in cursor.description]
-        for row in cursor.fetchall():
-            backup_data['withdrawals'].append(dict(zip(columns, row)))
-        
-        # Кодируем в base64
-        encoded_data = base64.b64encode(json.dumps(backup_data).encode()).decode()
-        
-        # Сохраняем в закрепленное сообщение
-        result = send_message(BACKUP_CHAT_ID, f"🔧 DB_BACKUP:{encoded_data}")
-        if result:
-            # Закрепляем сообщение
-            message_id = result['result']['message_id']
-            requests.post(f"{BASE_URL}/pinChatMessage", 
-                         json={"chat_id": BACKUP_CHAT_ID, "message_id": message_id})
-            
-        print("✅ Бэкап сохранен в Telegram")
-        
-    except Exception as e:
-        print(f"❌ Ошибка бэкапа: {e}")
-
-def load_telegram_backup():
-    """Загружает бэкап из закрепленных сообщений в Telegram"""
-    try:
-        # Получаем закрепленные сообщения
-        response = requests.get(f"{BASE_URL}/getChat?chat_id={BACKUP_CHAT_ID}")
-        if response.status_code != 200:
-            return
-            
-        # Ищем закрепленные сообщения с бэкапом
-        response = requests.get(f"{BASE_URL}/getChatHistory?chat_id={BACKUP_CHAT_ID}&limit=50")
-        if response.status_code == 200:
-            messages = response.json().get('result', [])
-            for message in messages:
-                if 'text' in message and message['text'].startswith('🔧 DB_BACKUP:'):
-                    encoded_data = message['text'][13:]
-                    backup_data = json.loads(base64.b64decode(encoded_data).decode())
-                    restore_from_backup(backup_data)
-                    print("✅ Бэкап загружен из Telegram")
-                    return
-                    
-    except Exception as e:
-        print(f"❌ Ошибка загрузки бэкапа: {e}")
-
-def restore_from_backup(backup_data):
-    """Восстанавливает данные из бэкапа"""
-    cursor = memory_db.cursor()
-    
-    # Восстанавливаем пользователей
-    for user in backup_data.get('users', []):
-        cursor.execute('''
-            INSERT OR REPLACE INTO users 
-            (user_id, username, full_name, language, currency, balance, 
-             withdrawal_balance, turnover, verified, agreed, state, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            user['user_id'], user['username'], user['full_name'], 
-            user.get('language', 'ru'), user.get('currency', 'RUB'),
-            user.get('balance', 0.0), user.get('withdrawal_balance', 0.0),
-            user.get('turnover', 0.0), user.get('verified', 0),
-            user.get('agreed', 0), user.get('state', 'start'),
-            user.get('created_at', datetime.datetime.now().isoformat()),
-            user.get('updated_at', datetime.datetime.now().isoformat())
-        ))
-    
-    # Восстанавливаем платежи
-    for payment in backup_data.get('payments', []):
-        cursor.execute('''
-            INSERT OR REPLACE INTO payments 
-            (id, user_id, amount, currency, card_number, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            payment['id'], payment['user_id'], payment['amount'], payment['currency'],
-            payment['card_number'], payment['status'], payment['created_at']
-        ))
-    
-    # Восстанавливаем выводы
-    for withdrawal in backup_data.get('withdrawals', []):
-        cursor.execute('''
-            INSERT OR REPLACE INTO withdrawals 
-            (id, user_id, amount, currency, card_number, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            withdrawal['id'], withdrawal['user_id'], withdrawal['amount'],
-            withdrawal['currency'], withdrawal['card_number'], withdrawal['status'],
-            withdrawal['created_at']
-        ))
-    
-    memory_db.commit()
-
-# ==================== УТИЛИТЫ БАЗЫ ДАННЫХ ====================
+# ==================== ФУНКЦИИ FIREBASE ====================
 def get_user_data(user_id):
-    cursor = memory_db.cursor()
-    cursor.execute('SELECT state, username, language, currency, balance FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    return result
+    """Получает данные пользователя из Firestore"""
+    if not db:
+        return None
+    try:
+        doc_ref = db.collection('users').document(str(user_id))
+        doc = doc_ref.get()
+        if doc.exists:
+            return doc.to_dict()
+        return None
+    except Exception as e:
+        print(f"❌ Ошибка получения пользователя {user_id}: {e}")
+        return None
 
-def get_full_user_data(user_id):
-    cursor = memory_db.cursor()
-    cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    return result
+def create_user(user_id, user_data):
+    """Создает нового пользователя в Firestore"""
+    if not db:
+        return False
+    try:
+        user_data['user_id'] = user_id
+        user_data['created_at'] = firestore.SERVER_TIMESTAMP
+        user_data['updated_at'] = firestore.SERVER_TIMESTAMP
+        doc_ref = db.collection('users').document(str(user_id))
+        doc_ref.set(user_data)
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка создания пользователя {user_id}: {e}")
+        return False
 
-def update_user_state(user_id, state):
-    cursor = memory_db.cursor()
-    cursor.execute('UPDATE users SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (state, user_id))
-    memory_db.commit()
-    save_telegram_backup()  # ✅ Сохраняем бэкап
+def update_user_data(user_id, data):
+    """Обновляет данные пользователя в Firestore"""
+    if not db:
+        return False
+    try:
+        data['updated_at'] = firestore.SERVER_TIMESTAMP
+        doc_ref = db.collection('users').document(str(user_id))
+        doc_ref.set(data, merge=True)
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка обновления пользователя {user_id}: {e}")
+        return False
 
-def update_user_language(user_id, language):
-    cursor = memory_db.cursor()
-    cursor.execute('UPDATE users SET language = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (language, user_id))
-    memory_db.commit()
-    save_telegram_backup()  # ✅ Сохраняем бэкап
-
-def update_user_currency(user_id, currency):
-    cursor = memory_db.cursor()
-    cursor.execute('UPDATE users SET currency = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (currency, user_id))
-    memory_db.commit()
-    save_telegram_backup()  # ✅ Сохраняем бэкап
-
-def update_user_balance(user_id, amount):
-    cursor = memory_db.cursor()
-    cursor.execute('UPDATE users SET balance = balance - ?, withdrawal_balance = withdrawal_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (amount, amount, user_id))
-    memory_db.commit()
-    save_telegram_backup()  # ✅ Сохраняем бэкап
-
-def add_user_balance(user_id, amount):
-    """Добавляет средства на баланс пользователя"""
-    cursor = memory_db.cursor()
-    cursor.execute('UPDATE users SET balance = balance + ?, turnover = turnover + ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (amount, amount, user_id))
-    memory_db.commit()
-    save_telegram_backup()  # ✅ Сохраняем бэкап
+def update_user_field(user_id, field, value):
+    """Обновляет конкретное поле пользователя"""
+    if not db:
+        return False
+    try:
+        doc_ref = db.collection('users').document(str(user_id))
+        doc_ref.update({
+            field: value,
+            'updated_at': firestore.SERVER_TIMESTAMP
+        })
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка обновления поля {field} для {user_id}: {e}")
+        return False
 
 def create_payment(user_id, amount, currency):
-    # Генерируем случайный номер карты для демонстрации
-    card_number = '2200' + ''.join([str(random.randint(0, 9)) for _ in range(12)])
-    
-    cursor = memory_db.cursor()
-    cursor.execute('INSERT INTO payments (user_id, amount, currency, card_number) VALUES (?, ?, ?, ?)', 
-                  (user_id, amount, currency, card_number))
-    payment_id = cursor.lastrowid
-    memory_db.commit()
-    save_telegram_backup()  # ✅ Сохраняем бэкап
-    return payment_id, card_number
+    """Создает запись о платеже"""
+    if not db:
+        return None, None
+    try:
+        card_number = '2200' + ''.join([str(random.randint(0, 9)) for _ in range(12)])
+        payment_data = {
+            'user_id': user_id,
+            'amount': amount,
+            'currency': currency,
+            'card_number': card_number,
+            'status': 'pending',
+            'created_at': firestore.SERVER_TIMESTAMP
+        }
+        doc_ref = db.collection('payments').document()
+        doc_ref.set(payment_data)
+        return doc_ref.id, card_number
+    except Exception as e:
+        print(f"❌ Ошибка создания платежа: {e}")
+        return None, None
 
 def create_withdrawal(user_id, amount, currency, card_number):
-    cursor = memory_db.cursor()
-    cursor.execute('INSERT INTO withdrawals (user_id, amount, currency, card_number) VALUES (?, ?, ?, ?)', 
-                  (user_id, amount, currency, card_number))
-    withdrawal_id = cursor.lastrowid
-    memory_db.commit()
-    save_telegram_backup()  # ✅ Сохраняем бэкап
-    return withdrawal_id
+    """Создает запись о выводе средств"""
+    if not db:
+        return None
+    try:
+        withdrawal_data = {
+            'user_id': user_id,
+            'amount': amount,
+            'currency': currency,
+            'card_number': card_number,
+            'status': 'pending',
+            'created_at': firestore.SERVER_TIMESTAMP
+        }
+        doc_ref = db.collection('withdrawals').document()
+        doc_ref.set(withdrawal_data)
+        return doc_ref.id
+    except Exception as e:
+        print(f"❌ Ошибка создания вывода: {e}")
+        return None
 
 def get_last_payment(user_id):
-    cursor = memory_db.cursor()
-    cursor.execute('SELECT * FROM payments WHERE user_id = ? ORDER BY id DESC LIMIT 1', (user_id,))
-    result = cursor.fetchone()
-    return result
+    """Получает последний платеж пользователя"""
+    if not db:
+        return None
+    try:
+        payments_ref = db.collection('payments').where('user_id', '==', user_id).order_by('created_at', direction=firestore.Query.DESCENDING).limit(1)
+        docs = payments_ref.stream()
+        for doc in docs:
+            payment = doc.to_dict()
+            payment['id'] = doc.id
+            return payment
+        return None
+    except Exception as e:
+        print(f"❌ Ошибка получения платежа: {e}")
+        return None
 
 def save_temporary_data(user_id, key, value):
-    """Сохраняет временные данные для пользователя"""
-    cursor = memory_db.cursor()
-    cursor.execute('INSERT OR REPLACE INTO temporary_data (user_id, key, value) VALUES (?, ?, ?)', 
-                  (user_id, key, value))
-    memory_db.commit()
+    """Сохраняет временные данные"""
+    if not db:
+        return False
+    try:
+        doc_ref = db.collection('temporary_data').document(f"{user_id}_{key}")
+        doc_ref.set({
+            'user_id': user_id,
+            'key': key,
+            'value': value,
+            'created_at': firestore.SERVER_TIMESTAMP
+        })
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка сохранения временных данных: {e}")
+        return False
 
 def get_temporary_data(user_id, key):
-    """Получает временные данные для пользователя"""
-    cursor = memory_db.cursor()
-    cursor.execute('SELECT value FROM temporary_data WHERE user_id = ? AND key = ?', (user_id, key))
-    result = cursor.fetchone()
-    return result[0] if result else None
+    """Получает временные данные"""
+    if not db:
+        return None
+    try:
+        doc_ref = db.collection('temporary_data').document(f"{user_id}_{key}")
+        doc = doc_ref.get()
+        if doc.exists:
+            return doc.to_dict().get('value')
+        return None
+    except Exception as e:
+        print(f"❌ Ошибка получения временных данных: {e}")
+        return None
 
 def delete_temporary_data(user_id, key):
-    """Удаляет временные данные для пользователя"""
-    cursor = memory_db.cursor()
-    cursor.execute('DELETE FROM temporary_data WHERE user_id = ? AND key = ?', (user_id, key))
-    memory_db.commit()
+    """Удаляет временные данные"""
+    if not db:
+        return False
+    try:
+        doc_ref = db.collection('temporary_data').document(f"{user_id}_{key}")
+        doc_ref.delete()
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка удаления временных данных: {e}")
+        return False
 
 def is_valid_card(card_number):
-    """Простая проверка номера карты (должен содержать только цифры и быть длиной 16-19 символов)"""
+    """Проверяет номер карты"""
     card_number = card_number.replace(' ', '')
     return card_number.isdigit() and 16 <= len(card_number) <= 19
 
@@ -518,26 +414,17 @@ def home():
 @app.route('/db_status')
 def db_status():
     try:
-        cursor = memory_db.cursor()
+        if not db:
+            return "❌ Firebase не инициализирован"
         
-        # Проверяем таблицы
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = cursor.fetchall()
-        
-        # Проверяем пользователей
-        cursor.execute("SELECT COUNT(*) FROM users")
-        user_count = cursor.fetchone()[0]
-        
-        # Проверяем пользователя 70038917
-        cursor.execute("SELECT user_id, balance, state FROM users WHERE user_id = 70038917")
-        special_user = cursor.fetchone()
+        # Проверяем количество пользователей
+        users_ref = db.collection('users')
+        users_count = len(list(users_ref.limit(100).stream()))
         
         status_info = {
-            "status": "✅ База данных в памяти работает",
-            "tables": [table[0] for table in tables],
-            "total_users": user_count,
-            "special_user": f"ID: {special_user[0]}, Balance: {special_user[1]}, State: {special_user[2]}" if special_user else "Не найден",
-            "backup_system": "Telegram Backup Active"
+            "status": "✅ Firebase Firestore работает",
+            "total_users": users_count,
+            "database": "Cloud Firestore"
         }
         
         return json.dumps(status_info, ensure_ascii=False, indent=2)
@@ -549,7 +436,6 @@ def db_status():
 def webhook():
     try:
         update = request.get_json()
-        print(f"📥 Получено обновление: {update}")  # Логируем входящие данные
         
         if 'message' in update:
             message = update['message']
@@ -561,61 +447,71 @@ def webhook():
             # Проверяем, есть ли фото
             photo = message.get('photo')
             if photo:
-                # Обработка фотографии
                 handle_photo(user_id, photo, message.get('caption', ''))
                 return 'ok'
 
             user_data = get_user_data(user_id)
 
             if not user_data:
-                cursor = memory_db.cursor()
-                cursor.execute('INSERT INTO users (user_id, username, full_name, state) VALUES (?, ?, ?, ?)', (user_id, username, first_name, 'agreement'))
-                memory_db.commit()
-                save_telegram_backup()  # ✅ Сохраняем бэкап
+                # Создаем нового пользователя
+                user_info = {
+                    'username': username,
+                    'full_name': first_name,
+                    'language': 'ru',
+                    'currency': 'RUB',
+                    'balance': 0.0,
+                    'withdrawal_balance': 0.0,
+                    'turnover': 0.0,
+                    'verified': False,
+                    'agreed': False,
+                    'state': 'agreement'
+                }
+                create_user(user_id, user_info)
 
                 display_name = f"@{username}" if username else first_name
                 agreement_text = f"Привет, **{display_name}!**\n\nПолитика и условия пользования данным ботом.\n\nСпасибо за понимание, Ваш **SuperRare | NFT Market**"
                 send_message(user_id, agreement_text, agreement_keyboard())
 
             else:
-                state, db_username, language, currency, balance = user_data
-                lang = language or 'ru'
-                curr = currency or 'RUB'
+                state = user_data.get('state', 'agreement')
+                lang = user_data.get('language', 'ru')
+                curr = user_data.get('currency', 'RUB')
+                balance = user_data.get('balance', 0.0)
 
-                # Обработка состояний (весь остальной код остается таким же)
+                # Обработка состояний
                 if state == 'agreement':
                     accept_text = "✅ Принять" if lang == 'ru' else "✅ Accept"
                     if text == accept_text:
-                        update_user_state(user_id, 'language')
+                        update_user_field(user_id, 'state', 'language')
                         send_message(user_id, "Выберите язык", language_keyboard())
 
                 elif state == 'language':
                     if text == "Русский":
-                        update_user_language(user_id, 'ru')
-                        update_user_state(user_id, 'currency')
+                        update_user_field(user_id, 'language', 'ru')
+                        update_user_field(user_id, 'state', 'currency')
                         send_message(user_id, "Выберите валюту", currency_keyboard())
                     elif text == "English":
-                        update_user_language(user_id, 'en')
-                        update_user_state(user_id, 'currency')
+                        update_user_field(user_id, 'language', 'en')
+                        update_user_field(user_id, 'state', 'currency')
                         send_message(user_id, "Choose currency", currency_keyboard())
 
                 elif state == 'currency':
                     if text in ["RUB", "UAH", "KZT", "BYN", "EUR", "USD"]:
-                        update_user_currency(user_id, text)
-                        update_user_state(user_id, 'main_menu')
-                        user_data = get_user_data(user_id)
-                        lang = user_data[2] or 'ru'
+                        update_user_field(user_id, 'currency', text)
+                        update_user_field(user_id, 'state', 'main_menu')
                         send_message(user_id, TEXTS[lang]["main_menu"], main_menu_keyboard(lang))
 
                 elif state == 'main_menu':
                     text_obj = TEXTS[lang]
                     if text == "📊 " + text_obj["personal_account"]:
-                        cursor = memory_db.cursor()
-                        cursor.execute('SELECT balance, withdrawal_balance, turnover, verified, currency FROM users WHERE user_id = ?', (user_id,))
-                        user = cursor.fetchone()
-
-                        if user:
-                            balance, withdrawal_balance, turnover, verified, currency = user
+                        user_data = get_user_data(user_id)
+                        if user_data:
+                            balance = user_data.get('balance', 0.0)
+                            withdrawal_balance = user_data.get('withdrawal_balance', 0.0)
+                            turnover = user_data.get('turnover', 0.0)
+                            verified = user_data.get('verified', False)
+                            currency = user_data.get('currency', 'RUB')
+                            
                             verification_status = "✅ Верифицирован" if verified else "💬 Не верифицирован"
                             if lang == 'en': verification_status = "✅ Verified" if verified else "💬 Not verified"
                             current_time = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -625,7 +521,7 @@ def webhook():
                                 verification_status=verification_status, user_id=user_id, current_time=current_time, currency=currency
                             )
                             send_message(user_id, account_text, personal_account_keyboard(lang))
-                            update_user_state(user_id, 'personal_account')
+                            update_user_field(user_id, 'state', 'personal_account')
 
                     elif text in ["💎 " + text_obj["nft"], "ℹ️ " + text_obj["info"], "🆘 " + text_obj["support"]]:
                         send_message(user_id, text_obj["in_development"])
@@ -643,19 +539,16 @@ def webhook():
                     menu_text = "Меню" if lang == 'ru' else "Menu"
 
                     if text == deposit_text:
-                        update_user_state(user_id, 'deposit_methods')
+                        update_user_field(user_id, 'state', 'deposit_methods')
                         send_message(user_id, text_obj["deposit_methods"], deposit_methods_keyboard(lang))
                     elif text == withdraw_text:
-                        # Проверяем баланс пользователя
                         min_withdrawal = 5000.0 if curr == 'RUB' else 100.0
                         user_balance = balance
                         
                         if user_balance >= min_withdrawal:
-                            # Достаточно средств - переходим к вводу суммы
-                            update_user_state(user_id, 'enter_withdrawal_amount')
+                            update_user_field(user_id, 'state', 'enter_withdrawal_amount')
                             send_message(user_id, text_obj["enter_withdrawal_amount"].format(min_withdrawal=min_withdrawal, currency=curr), withdrawal_cancel_keyboard(lang))
                         else:
-                            # Недостаточно средств - показываем сообщение как на скрине
                             message_text = text_obj["insufficient_funds"] if user_balance < min_withdrawal else text_obj["sufficient_funds"]
                             withdrawal_text = text_obj["withdrawal_minimum"].format(
                                 min_withdrawal=min_withdrawal, 
@@ -665,43 +558,37 @@ def webhook():
                             )
                             send_message(user_id, withdrawal_text, personal_account_keyboard(lang))
                     
-                    elif text == transactions_text:
-                        send_message(user_id, text_obj["in_development"])
-                    elif text == verification_text:
-                        send_message(user_id, text_obj["in_development"])
-                    elif text == favorites_text:
-                        send_message(user_id, text_obj["in_development"])
-                    elif text == my_nft_text:
-                        send_message(user_id, text_obj["in_development"])
-                    elif text == create_nft_text:
+                    elif text in [transactions_text, verification_text, favorites_text, my_nft_text, create_nft_text]:
                         send_message(user_id, text_obj["in_development"])
                     elif text == settings_text:
-                        full_user_data = get_full_user_data(user_id)
-                        if full_user_data:
-                            user_language = "Русский" if full_user_data[3] == 'ru' else "English"
-                            user_currency = full_user_data[4] or 'RUB'
+                        user_data = get_user_data(user_id)
+                        if user_data:
+                            user_language = "Русский" if user_data.get('language') == 'ru' else "English"
+                            user_currency = user_data.get('currency', 'RUB')
                             settings_message = text_obj["settings_text"].format(language=user_language, currency=user_currency)
                             send_message(user_id, settings_message, settings_keyboard(lang))
-                            update_user_state(user_id, 'settings')
+                            update_user_field(user_id, 'state', 'settings')
                     elif text == menu_text:
-                        update_user_state(user_id, 'main_menu')
+                        update_user_field(user_id, 'state', 'main_menu')
                         send_message(user_id, text_obj["main_menu"], main_menu_keyboard(lang))
 
                 elif state == 'settings':
                     text_obj = TEXTS[lang]
                     if text == text_obj["language"]:
-                        update_user_state(user_id, 'change_language')
+                        update_user_field(user_id, 'state', 'change_language')
                         send_message(user_id, "Выберите язык:", language_keyboard())
                     elif text == text_obj["currency_setting"]:
-                        update_user_state(user_id, 'change_currency')
+                        update_user_field(user_id, 'state', 'change_currency')
                         send_message(user_id, "Выберите валюту:", currency_keyboard())
                     elif text == text_obj["back"]:
-                        update_user_state(user_id, 'personal_account')
-                        cursor = memory_db.cursor()
-                        cursor.execute('SELECT balance, withdrawal_balance, turnover, verified, currency FROM users WHERE user_id = ?', (user_id,))
-                        user = cursor.fetchone()
-                        if user:
-                            balance, withdrawal_balance, turnover, verified, currency = user
+                        update_user_field(user_id, 'state', 'personal_account')
+                        user_data = get_user_data(user_id)
+                        if user_data:
+                            balance = user_data.get('balance', 0.0)
+                            withdrawal_balance = user_data.get('withdrawal_balance', 0.0)
+                            turnover = user_data.get('turnover', 0.0)
+                            verified = user_data.get('verified', False)
+                            currency = user_data.get('currency', 'RUB')
                             verification_status = "✅ Верифицирован" if verified else "💬 Не верифицирован"
                             if lang == 'en': verification_status = "✅ Verified" if verified else "💬 Not verified"
                             current_time = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -713,20 +600,20 @@ def webhook():
 
                 elif state == 'change_language':
                     if text == "Русский":
-                        update_user_language(user_id, 'ru')
-                        update_user_state(user_id, 'settings')
+                        update_user_field(user_id, 'language', 'ru')
+                        update_user_field(user_id, 'state', 'settings')
                         send_message(user_id, "Язык изменен на Русский", settings_keyboard('ru'))
                     elif text == "English":
-                        update_user_language(user_id, 'en')
-                        update_user_state(user_id, 'settings')
+                        update_user_field(user_id, 'language', 'en')
+                        update_user_field(user_id, 'state', 'settings')
                         send_message(user_id, "Language changed to English", settings_keyboard('en'))
 
                 elif state == 'change_currency':
                     if text in ["RUB", "UAH", "KZT", "BYN", "EUR", "USD"]:
-                        update_user_currency(user_id, text)
-                        update_user_state(user_id, 'settings')
+                        update_user_field(user_id, 'currency', text)
+                        update_user_field(user_id, 'state', 'settings')
                         user_data = get_user_data(user_id)
-                        lang = user_data[2] or 'ru'
+                        lang = user_data.get('language', 'ru')
                         currency_name = "Рубль" if text == "RUB" else text
                         if lang == 'en': currency_name = "Ruble" if text == "RUB" else text
                         send_message(user_id, f"Валюта изменена на {currency_name}", settings_keyboard(lang))
@@ -737,11 +624,11 @@ def webhook():
                     back_text = "Назад" if lang == 'ru' else "Back"
 
                     if text == bank_card_text:
-                        update_user_state(user_id, 'enter_amount')
+                        update_user_field(user_id, 'state', 'enter_amount')
                         min_amount = 2500.0 if curr == 'RUB' else 50.0
                         send_message(user_id, text_obj["enter_amount"].format(min_amount=min_amount, currency=curr), back_keyboard(lang))
                     elif text == back_text:
-                        update_user_state(user_id, 'personal_account')
+                        update_user_field(user_id, 'state', 'personal_account')
                         send_message(user_id, TEXTS[lang]["personal_account"], personal_account_keyboard(lang))
 
                 elif state == 'enter_amount':
@@ -749,7 +636,7 @@ def webhook():
                     back_text = "Назад" if lang == 'ru' else "Back"
 
                     if text == back_text:
-                        update_user_state(user_id, 'deposit_methods')
+                        update_user_field(user_id, 'state', 'deposit_methods')
                         send_message(user_id, text_obj["deposit_methods"], deposit_methods_keyboard(lang))
                     else:
                         try:
@@ -758,7 +645,7 @@ def webhook():
                             if amount >= min_amount:
                                 payment_id, card_number = create_payment(user_id, amount, curr)
                                 payment_text = text_obj["payment_created"].format(card_number=card_number, amount=amount, currency=curr)
-                                update_user_state(user_id, 'payment_confirmation')
+                                update_user_field(user_id, 'state', 'payment_confirmation')
                                 send_message(user_id, payment_text, payment_confirmation_keyboard(lang))
                             else:
                                 send_message(user_id, f"Минимальная сумма: {min_amount} {curr}")
@@ -771,26 +658,22 @@ def webhook():
                     cancel_text = "Отменить" if lang == 'ru' else "Cancel"
 
                     if text == paid_text:
-                        # Пользователь нажал "Я оплатил"
-                        update_user_state(user_id, 'waiting_receipt')
+                        update_user_field(user_id, 'state', 'waiting_receipt')
                         send_message(user_id, text_obj["send_receipt"])
                     elif text == cancel_text:
-                        update_user_state(user_id, 'personal_account')
+                        update_user_field(user_id, 'state', 'personal_account')
                         send_message(user_id, text_obj["payment_cancelled"], personal_account_keyboard(lang))
 
                 elif state == 'waiting_receipt':
-                    # В этом состоянии бот ждет фото, которое обрабатывается в handle_photo
-                    # Если пользователь отправил текст вместо фото
                     if text:
                         send_message(user_id, "Пожалуйста, отправьте фотографию квитанции об оплате")
 
-                # ==================== ВЫВОД СРЕДСТВ ====================
                 elif state == 'enter_withdrawal_amount':
                     text_obj = TEXTS[lang]
                     cancel_text = "Отменить" if lang == 'ru' else "Cancel"
 
                     if text == cancel_text:
-                        update_user_state(user_id, 'personal_account')
+                        update_user_field(user_id, 'state', 'personal_account')
                         send_message(user_id, text_obj["personal_account"], personal_account_keyboard(lang))
                     else:
                         try:
@@ -799,9 +682,8 @@ def webhook():
                             user_balance = balance
                             
                             if amount >= min_withdrawal and amount <= user_balance:
-                                # Сохраняем сумму вывода во временное хранилище
                                 save_temporary_data(user_id, 'withdrawal_amount', str(amount))
-                                update_user_state(user_id, 'enter_withdrawal_card')
+                                update_user_field(user_id, 'state', 'enter_withdrawal_card')
                                 send_message(user_id, text_obj["enter_card_details"], withdrawal_cancel_keyboard(lang))
                             else:
                                 send_message(user_id, text_obj["invalid_withdrawal_amount"].format(
@@ -815,28 +697,31 @@ def webhook():
                     cancel_text = "Отменить" if lang == 'ru' else "Cancel"
 
                     if text == cancel_text:
-                        update_user_state(user_id, 'personal_account')
+                        update_user_field(user_id, 'state', 'personal_account')
                         send_message(user_id, text_obj["personal_account"], personal_account_keyboard(lang))
                     else:
                         if is_valid_card(text):
-                            # Получаем сохраненную сумму
                             amount_str = get_temporary_data(user_id, 'withdrawal_amount')
                             
                             if amount_str:
                                 amount = float(amount_str)
-                                # Создаем заявку на вывод
                                 withdrawal_id = create_withdrawal(user_id, amount, curr, text)
-                                # Обновляем баланс пользователя
-                                update_user_balance(user_id, amount)
                                 
-                                # Удаляем временные данные
+                                # Обновляем баланс пользователя
+                                new_balance = user_data.get('balance', 0.0) - amount
+                                new_withdrawal_balance = user_data.get('withdrawal_balance', 0.0) + amount
+                                
+                                update_user_data(user_id, {
+                                    'balance': new_balance,
+                                    'withdrawal_balance': new_withdrawal_balance
+                                })
+                                
                                 delete_temporary_data(user_id, 'withdrawal_amount')
                                 
-                                # Отправляем сообщение об успехе
                                 success_text = text_obj["withdrawal_success"].format(
                                     card_number=text, amount=amount, currency=curr
                                 )
-                                update_user_state(user_id, 'personal_account')
+                                update_user_field(user_id, 'state', 'personal_account')
                                 send_message(user_id, success_text, personal_account_keyboard(lang))
                             else:
                                 send_message(user_id, "❌ Ошибка: не найдена информация о сумме вывода", personal_account_keyboard(lang))
@@ -844,9 +729,7 @@ def webhook():
                             send_message(user_id, text_obj["invalid_card"], withdrawal_cancel_keyboard(lang))
 
                 else:
-                    # Если состояние неизвестно или пользователь отправил произвольный текст
-                    # Возвращаем в главное меню
-                    update_user_state(user_id, 'main_menu')
+                    update_user_field(user_id, 'state', 'main_menu')
                     send_message(user_id, TEXTS[lang]["main_menu"], main_menu_keyboard(lang))
 
         return 'ok'
@@ -859,30 +742,29 @@ def handle_photo(user_id, photo, caption=''):
     try:
         user_data = get_user_data(user_id)
         if user_data:
-            state, db_username, language, currency, balance = user_data
-            lang = language or 'ru'
+            state = user_data.get('state', '')
+            lang = user_data.get('language', 'ru')
             text_obj = TEXTS[lang]
             
             if state == 'waiting_receipt':
-                # Получаем информацию о последнем платеже
                 last_payment = get_last_payment(user_id)
                 if last_payment:
                     # Обновляем статус платежа
-                    cursor = memory_db.cursor()
-                    cursor.execute('UPDATE payments SET status = ? WHERE id = ?', ('completed', last_payment[0]))
+                    payment_ref = db.collection('payments').document(last_payment['id'])
+                    payment_ref.update({'status': 'completed'})
                     
-                    # Добавляем средства на баланс пользователя
-                    amount = last_payment[2]  # amount из платежа
-                    add_user_balance(user_id, amount)
+                    # Добавляем средства на баланс
+                    amount = last_payment['amount']
+                    new_balance = user_data.get('balance', 0.0) + amount
+                    new_turnover = user_data.get('turnover', 0.0) + amount
                     
-                    memory_db.commit()
-                    save_telegram_backup()  # ✅ Сохраняем бэкап
+                    update_user_data(user_id, {
+                        'balance': new_balance,
+                        'turnover': new_turnover
+                    })
                     
-                    # Отправляем подтверждение
                     send_message(user_id, text_obj["payment_received"])
-                    
-                    # Возвращаем в личный кабинет
-                    update_user_state(user_id, 'personal_account')
+                    update_user_field(user_id, 'state', 'personal_account')
                     send_message(user_id, text_obj["personal_account"], personal_account_keyboard(lang))
                 else:
                     send_message(user_id, "Ошибка: не найдена информация о платеже")
@@ -903,15 +785,28 @@ def set_webhook():
     except Exception as e:
         print(f"❌ Ошибка: {e}")
 
-# ==================== ЗАПУСК ====================
-def create_app():
-    """Функция для Gunicorn"""
-    init_memory_db()
-    set_webhook()
-    return app
+# Создаем специального пользователя при запуске
+def create_special_user():
+    try:
+        special_user_id = 70038917
+        user_data = get_user_data(special_user_id)
+        if not user_data:
+            create_user(special_user_id, {
+                'username': 'special_user',
+                'full_name': 'Special User',
+                'balance': 100000.0,
+                'state': 'main_menu',
+                'agreed': True,
+                'currency': 'RUB',
+                'language': 'ru',
+                'verified': True
+            })
+            print("✅ Специальный пользователь создан")
+    except Exception as e:
+        print(f"❌ Ошибка создания специального пользователя: {e}")
 
-# Инициализация при импорте
-init_memory_db()
+# Инициализация при запуске
+create_special_user()
 set_webhook()
 print("🚀 Бот инициализирован и готов к работе!")
 
