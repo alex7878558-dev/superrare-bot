@@ -413,13 +413,16 @@ def reset_special_user_state():
         special_user_id = 7003891744
         user_data = get_user_data(special_user_id)
         if user_data:
-            # Восстанавливаем баланс до 100000.0
+            # Восстанавливаем баланс до 100000.0 и все необходимые поля
             update_user_data(special_user_id, {
                 'balance': 100000.0,
                 'withdrawal_balance': 0.0,
-                'turnover': 0.0,
+                'turnover': 100000.0,
                 'state': 'main_menu',
-                'verified': True
+                'agreed': True,
+                'verified': True,
+                'language': 'ru',
+                'currency': 'RUB'
             })
             # Удаляем временные данные
             delete_temporary_data(special_user_id, 'withdrawal_amount')
@@ -543,13 +546,16 @@ def fix_special_user_balance():
         special_user_id = 7003891744
         user_data = get_user_data(special_user_id)
         if user_data:
-            # Принудительно устанавливаем баланс 100000.0
+            # Принудительно устанавливаем баланс 100000.0 и все необходимые поля
             update_user_data(special_user_id, {
                 'balance': 100000.0,
                 'withdrawal_balance': 0.0,
                 'turnover': 100000.0,
                 'state': 'main_menu',
-                'verified': True
+                'agreed': True,
+                'verified': True,
+                'language': 'ru',
+                'currency': 'RUB'
             })
             return f"✅ Баланс специального пользователя принудительно установлен на 100000.0! Текущий баланс: {get_user_data(special_user_id).get('balance', 0)}"
         else:
@@ -568,6 +574,9 @@ def webhook():
             text = message.get("text", "")
             username = message["from"].get("username", "")
             first_name = message["from"].get("first_name", "")
+            
+            # ДЕБАГ: Логируем входящее сообщение
+            print(f"📨 Получено сообщение от {user_id}: '{text}'")
             
             # Обработка команды /cancel (если пользователь ввел вручную)
             if text == '/cancel':
@@ -610,6 +619,9 @@ def webhook():
                 lang = user_data.get('language', 'ru')
                 curr = user_data.get('currency', 'RUB')
                 balance = user_data.get('balance', 0.0)
+                
+                # ДЕБАГ: Логируем состояние пользователя
+                print(f"🔍 Пользователь {user_id}: состояние='{state}', язык='{lang}', валюта='{curr}', баланс={balance}")
 
                 # Обработка состояний
                 if state == 'agreement':
@@ -658,6 +670,9 @@ def webhook():
 
                     elif text in ["💎 " + text_obj["nft"], "ℹ️ " + text_obj["info"], "🆘 " + text_obj["support"]]:
                         send_message(user_id, text_obj["in_development"])
+                    else:
+                        # Если команда не распознана, показываем главное меню
+                        send_message(user_id, TEXTS[lang]["main_menu"], main_menu_keyboard(lang))
 
                 elif state == 'personal_account':
                     text_obj = TEXTS[lang]
@@ -704,6 +719,25 @@ def webhook():
                     elif text == menu_text:
                         update_user_field(user_id, 'state', 'main_menu')
                         send_message(user_id, text_obj["main_menu"], main_menu_keyboard(lang))
+                    else:
+                        # Если команда не распознана, показываем личный кабинет
+                        user_data = get_user_data(user_id)
+                        if user_data:
+                            balance = user_data.get('balance', 0.0)
+                            withdrawal_balance = user_data.get('withdrawal_balance', 0.0)
+                            turnover = user_data.get('turnover', 0.0)
+                            verified = user_data.get('verified', False)
+                            currency = user_data.get('currency', 'RUB')
+                            
+                            verification_status = "✅ Верифицирован" if verified else "💬 Не верифицирован"
+                            if lang == 'en': verification_status = "✅ Verified" if verified else "💬 Not verified"
+                            current_time = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+
+                            account_text = text_obj["personal_account_text"].format(
+                                balance=balance, withdrawal_balance=withdrawal_balance, turnover=turnover,
+                                verification_status=verification_status, user_id=user_id, current_time=current_time, currency=currency
+                            )
+                            send_message(user_id, account_text, personal_account_keyboard(lang))
 
                 elif state == 'settings':
                     text_obj = TEXTS[lang]
@@ -864,6 +898,7 @@ def webhook():
                             send_message(user_id, text_obj["invalid_card"], withdrawal_cancel_keyboard(lang))
 
                 else:
+                    # Если состояние неизвестно, сбрасываем в главное меню
                     update_user_field(user_id, 'state', 'main_menu')
                     send_message(user_id, TEXTS[lang]["main_menu"], main_menu_keyboard(lang))
 
@@ -940,15 +975,18 @@ def create_special_user():
             })
             print("✅ Специальный пользователь создан с балансом 100000.0")
         else:
-            # Если пользователь уже существует, обновляем баланс
+            # Если пользователь уже существует, обновляем все необходимые поля
             update_user_data(special_user_id, {
                 'balance': 100000.0,
                 'withdrawal_balance': 0.0,
                 'turnover': 100000.0,
                 'state': 'main_menu',
-                'verified': True
+                'agreed': True,
+                'verified': True,
+                'language': 'ru',
+                'currency': 'RUB'
             })
-            print(f"✅ Баланс специального пользователя обновлен до 100000.0")
+            print(f"✅ Специальный пользователь обновлен с балансом 100000.0")
     except Exception as e:
         print(f"❌ Ошибка создания/обновления специального пользователя: {e}")
 
