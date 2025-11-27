@@ -477,10 +477,20 @@ def set_webhook():
     except Exception as e:
         print(f"❌ Ошибка: {e}")
 
-# ==================== ЗАПУСК ====================
-if __name__ == "__main__":
+# ==================== ЗАПУСК ДЛЯ PRODUCTION ====================
+def create_app():
+    """Функция для Gunicorn"""
     init_db()
     set_webhook()
-    print("🚀 Бот запущен с webhook!")
+    return app
+
+# Инициализация при импорте (для Gunicorn)
+init_db()
+set_webhook()
+print("🚀 Бот инициализирован и готов к работе!")
+
+if __name__ == "__main__":
+    # Только для локальной разработки
     port = int(os.environ.get('PORT', 5000))
+    print(f"📍 Локальный запуск на порту {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
