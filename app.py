@@ -432,6 +432,20 @@ def db_status():
     except Exception as e:
         return f"❌ Ошибка БД: {str(e)}"
 
+@app.route('/debug_env')
+def debug_env():
+    """Отладочная страница для проверки переменных окружения"""
+    env_vars = {
+        'FIREBASE_PROJECT_ID': os.environ.get("FIREBASE_PROJECT_ID"),
+        'FIREBASE_PRIVATE_KEY_ID': os.environ.get("FIREBASE_PRIVATE_KEY_ID"),
+        'FIREBASE_CLIENT_EMAIL': os.environ.get("FIREBASE_CLIENT_EMAIL"), 
+        'FIREBASE_CLIENT_ID': os.environ.get("FIREBASE_CLIENT_ID"),
+        'FIREBASE_PRIVATE_KEY_EXISTS': bool(os.environ.get("FIREBASE_PRIVATE_KEY")),
+        'FIREBASE_PRIVATE_KEY_LENGTH': len(os.environ.get("FIREBASE_PRIVATE_KEY", "")),
+    }
+    
+    return json.dumps(env_vars, ensure_ascii=False, indent=2)
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
