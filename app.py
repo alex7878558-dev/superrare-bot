@@ -4,6 +4,7 @@ import datetime
 import time
 import os
 import threading
+import random
 from flask import Flask, request
 
 app = Flask(__name__)
@@ -251,7 +252,6 @@ def update_user_currency(user_id, currency):
 
 def create_payment(user_id, amount, currency):
     # Генерируем случайный номер карты для демонстрации
-    import random
     card_number = '2200' + ''.join([str(random.randint(0, 9)) for _ in range(12)])
     
     conn = sqlite3.connect('superrare.db', check_same_thread=False)
@@ -383,19 +383,30 @@ def webhook():
                 elif state == 'personal_account':
                     text_obj = TEXTS[lang]
                     deposit_text = "Пополнить" if lang == 'ru' else "Deposit"
-                    menu_text = "Меню" if lang == 'ru' else "Menu"
-                    back_text = "Назад" if lang == 'ru' else "Back"
+                    withdraw_text = "Вывести" if lang == 'ru' else "Withdraw"
+                    transactions_text = "Транзакции" if lang == 'ru' else "Transactions"
+                    verification_text = "Верификация" if lang == 'ru' else "Verification"
+                    favorites_text = "Избранное" if lang == 'ru' else "Favorites"
+                    my_nft_text = "Мои NFT" if lang == 'ru' else "My NFT"
+                    create_nft_text = "Создать NFT" if lang == 'ru' else "Create NFT"
                     settings_text = text_obj["settings"]
+                    menu_text = "Меню" if lang == 'ru' else "Menu"
 
                     if text == deposit_text:
                         update_user_state(user_id, 'deposit_methods')
                         send_message(user_id, text_obj["deposit_methods"], deposit_methods_keyboard(lang))
-                    elif text == menu_text:
-                        update_user_state(user_id, 'main_menu')
-                        send_message(user_id, text_obj["main_menu"], main_menu_keyboard(lang))
-                    elif text == back_text:
-                        update_user_state(user_id, 'main_menu')
-                        send_message(user_id, text_obj["main_menu"], main_menu_keyboard(lang))
+                    elif text == withdraw_text:
+                        send_message(user_id, text_obj["in_development"])
+                    elif text == transactions_text:
+                        send_message(user_id, text_obj["in_development"])
+                    elif text == verification_text:
+                        send_message(user_id, text_obj["in_development"])
+                    elif text == favorites_text:
+                        send_message(user_id, text_obj["in_development"])
+                    elif text == my_nft_text:
+                        send_message(user_id, text_obj["in_development"])
+                    elif text == create_nft_text:
+                        send_message(user_id, text_obj["in_development"])
                     elif text == settings_text:
                         full_user_data = get_full_user_data(user_id)
                         if full_user_data:
@@ -404,6 +415,9 @@ def webhook():
                             settings_message = text_obj["settings_text"].format(language=user_language, currency=user_currency)
                             send_message(user_id, settings_message, settings_keyboard(lang))
                             update_user_state(user_id, 'settings')
+                    elif text == menu_text:
+                        update_user_state(user_id, 'main_menu')
+                        send_message(user_id, text_obj["main_menu"], main_menu_keyboard(lang))
 
                 elif state == 'settings':
                     text_obj = TEXTS[lang]
@@ -503,6 +517,12 @@ def webhook():
                     # Если пользователь отправил текст вместо фото
                     if text:
                         send_message(user_id, "Пожалуйста, отправьте фотографию квитанции об оплате")
+
+                else:
+                    # Если состояние неизвестно или пользователь отправил произвольный текст
+                    # Возвращаем в главное меню
+                    update_user_state(user_id, 'main_menu')
+                    send_message(user_id, TEXTS[lang]["main_menu"], main_menu_keyboard(lang))
 
         return 'ok'
     except Exception as e:
