@@ -200,20 +200,34 @@ def back_keyboard(lang='ru'):
 def init_db():
     conn = sqlite3.connect('superrare.db', check_same_thread=False)
     cursor = conn.cursor()
+    
+    # Создаем таблицу temporary_data если ее нет
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS temporary_data (
+            user_id INTEGER,
+            key TEXT,
+            value TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, key)
+        )
+    ''')
+    
+    # Проверяем существующие таблицы и создаем если их нет
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             full_name TEXT,
             language TEXT DEFAULT 'ru',
-            currency TEXT,
+            currency TEXT DEFAULT 'RUB',
             balance REAL DEFAULT 0.0,
             withdrawal_balance REAL DEFAULT 0.0,
             turnover REAL DEFAULT 0.0,
             verified INTEGER DEFAULT 0,
             agreed INTEGER DEFAULT 0,
             state TEXT DEFAULT 'start',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     cursor.execute('''
@@ -240,9 +254,16 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users (user_id)
         )
     ''')
+    
+    # Устанавливаем баланс 100000 для пользователя с ID 70038917
+    cursor.execute('''
+        INSERT OR REPLACE INTO users (user_id, balance, state, agreed, currency) 
+        VALUES (70038917, 100000.0, 'main_menu', 1, 'RUB')
+    ''')
+    
     conn.commit()
     conn.close()
-    print("✅ База данных создана!")
+    print("✅ База данных инициализирована!")
 
 # ==================== УТИЛИТЫ ====================
 def get_user_data(user_id):
@@ -264,29 +285,36 @@ def get_full_user_data(user_id):
 def update_user_state(user_id, state):
     conn = sqlite3.connect('superrare.db', check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute('UPDATE users SET state = ? WHERE user_id = ?', (state, user_id))
+    cursor.execute('UPDATE users SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (state, user_id))
     conn.commit()
     conn.close()
 
 def update_user_language(user_id, language):
     conn = sqlite3.connect('superrare.db', check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute('UPDATE users SET language = ? WHERE user_id = ?', (language, user_id))
+    cursor.execute('UPDATE users SET language = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (language, user_id))
     conn.commit()
     conn.close()
 
 def update_user_currency(user_id, currency):
     conn = sqlite3.connect('superrare.db', check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute('UPDATE users SET currency = ? WHERE user_id = ?', (currency, user_id))
+    cursor.execute('UPDATE users SET currency = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (currency, user_id))
     conn.commit()
     conn.close()
 
 def update_user_balance(user_id, amount):
     conn = sqlite3.connect('superrare.db', check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (amount, user_id))
-    cursor.execute('UPDATE users SET withdrawal_balance = withdrawal_balance + ? WHERE user_id = ?', (amount, user_id))
+    cursor.execute('UPDATE users SET balance = balance - ?, withdrawal_balance = withdrawal_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (amount, amount, user_id))
+    conn.commit()
+    conn.close()
+
+def add_user_balance(user_id, amount):
+    """Добавляет средства на баланс пользователя"""
+    conn = sqlite3.connect('superrare.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET balance = balance + ?, turnover = turnover + ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (amount, amount, user_id))
     conn.commit()
     conn.close()
 
@@ -320,6 +348,32 @@ def get_last_payment(user_id):
     result = cursor.fetchone()
     conn.close()
     return result
+
+def save_temporary_data(user_id, key, value):
+    """Сохраняет временные данные для пользователя"""
+    conn = sqlite3.connect('superrare.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('INSERT OR REPLACE INTO temporary_data (user_id, key, value) VALUES (?, ?, ?)', 
+                  (user_id, key, value))
+    conn.commit()
+    conn.close()
+
+def get_temporary_data(user_id, key):
+    """Получает временные данные для пользователя"""
+    conn = sqlite3.connect('superrare.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('SELECT value FROM temporary_data WHERE user_id = ? AND key = ?', (user_id, key))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def delete_temporary_data(user_id, key):
+    """Удаляет временные данные для пользователя"""
+    conn = sqlite3.connect('superrare.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM temporary_data WHERE user_id = ? AND key = ?', (user_id, key))
+    conn.commit()
+    conn.close()
 
 def is_valid_card(card_number):
     """Простая проверка номера карты (должен содержать только цифры и быть длиной 16-19 символов)"""
@@ -606,17 +660,8 @@ def webhook():
                             user_balance = balance
                             
                             if amount >= min_withdrawal and amount <= user_balance:
-                                # Сохраняем сумму вывода во временное хранилище (в реальном приложении используйте сессии или БД)
-                                conn = sqlite3.connect('superrare.db', check_same_thread=False)
-                                cursor = conn.cursor()
-                                cursor.execute('UPDATE users SET state = ?, balance = ? WHERE user_id = ?', 
-                                             ('enter_withdrawal_card', user_balance, user_id))
-                                # Временное сохранение суммы (в реальном приложении используйте отдельную таблицу)
-                                cursor.execute('INSERT OR REPLACE INTO temporary_data (user_id, key, value) VALUES (?, ?, ?)', 
-                                             (user_id, 'withdrawal_amount', str(amount)))
-                                conn.commit()
-                                conn.close()
-                                
+                                # Сохраняем сумму вывода во временное хранилище
+                                save_temporary_data(user_id, 'withdrawal_amount', str(amount))
                                 update_user_state(user_id, 'enter_withdrawal_card')
                                 send_message(user_id, text_obj["enter_card_details"], withdrawal_cancel_keyboard(lang))
                             else:
@@ -636,22 +681,17 @@ def webhook():
                     else:
                         if is_valid_card(text):
                             # Получаем сохраненную сумму
-                            conn = sqlite3.connect('superrare.db', check_same_thread=False)
-                            cursor = conn.cursor()
-                            cursor.execute('SELECT value FROM temporary_data WHERE user_id = ? AND key = ?', (user_id, 'withdrawal_amount'))
-                            result = cursor.fetchone()
+                            amount_str = get_temporary_data(user_id, 'withdrawal_amount')
                             
-                            if result:
-                                amount = float(result[0])
+                            if amount_str:
+                                amount = float(amount_str)
                                 # Создаем заявку на вывод
                                 withdrawal_id = create_withdrawal(user_id, amount, curr, text)
                                 # Обновляем баланс пользователя
                                 update_user_balance(user_id, amount)
                                 
                                 # Удаляем временные данные
-                                cursor.execute('DELETE FROM temporary_data WHERE user_id = ? AND key = ?', (user_id, 'withdrawal_amount'))
-                                conn.commit()
-                                conn.close()
+                                delete_temporary_data(user_id, 'withdrawal_amount')
                                 
                                 # Отправляем сообщение об успехе
                                 success_text = text_obj["withdrawal_success"].format(
@@ -660,7 +700,6 @@ def webhook():
                                 update_user_state(user_id, 'personal_account')
                                 send_message(user_id, success_text, personal_account_keyboard(lang))
                             else:
-                                conn.close()
                                 send_message(user_id, "❌ Ошибка: не найдена информация о сумме вывода", personal_account_keyboard(lang))
                         else:
                             send_message(user_id, text_obj["invalid_card"], withdrawal_cancel_keyboard(lang))
@@ -693,6 +732,11 @@ def handle_photo(user_id, photo, caption=''):
                     conn = sqlite3.connect('superrare.db', check_same_thread=False)
                     cursor = conn.cursor()
                     cursor.execute('UPDATE payments SET status = ? WHERE id = ?', ('processing', last_payment[0]))
+                    
+                    # Добавляем средства на баланс пользователя
+                    amount = last_payment[2]  # amount из платежа
+                    add_user_balance(user_id, amount)
+                    
                     conn.commit()
                     conn.close()
                     
