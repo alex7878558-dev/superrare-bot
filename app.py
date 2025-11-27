@@ -6,6 +6,7 @@ import os
 import threading
 import random
 import json
+import base64
 from flask import Flask, request
 
 app = Flask(__name__)
@@ -13,6 +14,10 @@ app = Flask(__name__)
 # ==================== КОНФИГ ====================
 BOT_TOKEN = "8583960432:AAFnqFYa9iHn-08KM1HQnJpLG3qQ3zUdPdY"
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+# Глобальная база данных в памяти + Telegram Backup
+memory_db = None
+BACKUP_CHAT_ID = "70038917"  # Твой ID для бэкапов
 
 # ==================== ФУНКЦИЯ САМОПРОБУЖДЕНИЯ ====================
 def keep_alive():
@@ -197,23 +202,16 @@ def back_keyboard(lang='ru'):
     back_text = TEXTS[lang]["back"]
     return {"keyboard": [[{"text": back_text}]], "resize_keyboard": True}
 
-# ==================== БАЗА ДАННЫХ ====================
-def init_db():
-    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-    cursor = conn.cursor()
+# ==================== БАЗА ДАННЫХ В ПАМЯТИ + TELEGRAM BACKUP ====================
+def init_memory_db():
+    """Инициализирует базу данных в памяти и загружает backup из Telegram"""
+    global memory_db
     
-    # Создаем таблицу temporary_data если ее нет
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS temporary_data (
-            user_id INTEGER,
-            key TEXT,
-            value TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (user_id, key)
-        )
-    ''')
+    # Создаем базу в памяти
+    memory_db = sqlite3.connect(':memory:', check_same_thread=False)
+    cursor = memory_db.cursor()
     
-    # Проверяем существующие таблицы и создаем если их нет
+    # Создаем таблицы
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -231,6 +229,7 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -243,6 +242,7 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users (user_id)
         )
     ''')
+    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS withdrawals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -256,125 +256,238 @@ def init_db():
         )
     ''')
     
-    # Устанавливаем баланс 100000 для пользователя с ID 70038917
     cursor.execute('''
-        INSERT OR REPLACE INTO users (user_id, balance, state, agreed, currency, username, full_name) 
-        VALUES (70038917, 100000.0, 'main_menu', 1, 'RUB', 'special_user', 'Special User')
+        CREATE TABLE IF NOT EXISTS temporary_data (
+            user_id INTEGER,
+            key TEXT,
+            value TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, key)
+        )
     ''')
     
-    conn.commit()
-    conn.close()
-    print("✅ База данных инициализирована!")
+    # Загружаем backup из Telegram
+    load_telegram_backup()
+    
+    # Создаем пользователя 70038917 если его нет
+    cursor.execute('SELECT 1 FROM users WHERE user_id = 70038917')
+    if not cursor.fetchone():
+        cursor.execute('''
+            INSERT INTO users (user_id, username, full_name, balance, state, agreed, currency) 
+            VALUES (70038917, 'special_user', 'Special User', 100000.0, 'main_menu', 1, 'RUB')
+        ''')
+        save_telegram_backup()
+        print("✅ Пользователь 70038917 создан с балансом 100000.0")
+    
+    memory_db.commit()
+    print("✅ База данных в памяти инициализирована с бэкапом из Telegram!")
 
-# ==================== УТИЛИТЫ ====================
+def save_telegram_backup():
+    """Сохраняет всю БД в закрепленное сообщение в Telegram"""
+    try:
+        cursor = memory_db.cursor()
+        
+        # Собираем все данные
+        backup_data = {
+            'users': [],
+            'payments': [],
+            'withdrawals': [],
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        
+        # Пользователи
+        cursor.execute('SELECT * FROM users')
+        columns = [description[0] for description in cursor.description]
+        for row in cursor.fetchall():
+            backup_data['users'].append(dict(zip(columns, row)))
+        
+        # Платежи
+        cursor.execute('SELECT * FROM payments')
+        columns = [description[0] for description in cursor.description]
+        for row in cursor.fetchall():
+            backup_data['payments'].append(dict(zip(columns, row)))
+        
+        # Выводы
+        cursor.execute('SELECT * FROM withdrawals')
+        columns = [description[0] for description in cursor.description]
+        for row in cursor.fetchall():
+            backup_data['withdrawals'].append(dict(zip(columns, row)))
+        
+        # Кодируем в base64
+        encoded_data = base64.b64encode(json.dumps(backup_data).encode()).decode()
+        
+        # Сохраняем в закрепленное сообщение
+        result = send_message(BACKUP_CHAT_ID, f"🔧 DB_BACKUP:{encoded_data}")
+        if result:
+            # Закрепляем сообщение
+            message_id = result['result']['message_id']
+            requests.post(f"{BASE_URL}/pinChatMessage", 
+                         json={"chat_id": BACKUP_CHAT_ID, "message_id": message_id})
+            
+        print("✅ Бэкап сохранен в Telegram")
+        
+    except Exception as e:
+        print(f"❌ Ошибка бэкапа: {e}")
+
+def load_telegram_backup():
+    """Загружает бэкап из закрепленных сообщений в Telegram"""
+    try:
+        # Получаем закрепленные сообщения
+        response = requests.get(f"{BASE_URL}/getChat?chat_id={BACKUP_CHAT_ID}")
+        if response.status_code != 200:
+            return
+            
+        # Ищем закрепленные сообщения с бэкапом
+        response = requests.get(f"{BASE_URL}/getChatHistory?chat_id={BACKUP_CHAT_ID}&limit=50")
+        if response.status_code == 200:
+            messages = response.json().get('result', [])
+            for message in messages:
+                if 'text' in message and message['text'].startswith('🔧 DB_BACKUP:'):
+                    encoded_data = message['text'][13:]
+                    backup_data = json.loads(base64.b64decode(encoded_data).decode())
+                    restore_from_backup(backup_data)
+                    print("✅ Бэкап загружен из Telegram")
+                    return
+                    
+    except Exception as e:
+        print(f"❌ Ошибка загрузки бэкапа: {e}")
+
+def restore_from_backup(backup_data):
+    """Восстанавливает данные из бэкапа"""
+    cursor = memory_db.cursor()
+    
+    # Восстанавливаем пользователей
+    for user in backup_data.get('users', []):
+        cursor.execute('''
+            INSERT OR REPLACE INTO users 
+            (user_id, username, full_name, language, currency, balance, 
+             withdrawal_balance, turnover, verified, agreed, state, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            user['user_id'], user['username'], user['full_name'], 
+            user.get('language', 'ru'), user.get('currency', 'RUB'),
+            user.get('balance', 0.0), user.get('withdrawal_balance', 0.0),
+            user.get('turnover', 0.0), user.get('verified', 0),
+            user.get('agreed', 0), user.get('state', 'start'),
+            user.get('created_at', datetime.datetime.now().isoformat()),
+            user.get('updated_at', datetime.datetime.now().isoformat())
+        ))
+    
+    # Восстанавливаем платежи
+    for payment in backup_data.get('payments', []):
+        cursor.execute('''
+            INSERT OR REPLACE INTO payments 
+            (id, user_id, amount, currency, card_number, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            payment['id'], payment['user_id'], payment['amount'], payment['currency'],
+            payment['card_number'], payment['status'], payment['created_at']
+        ))
+    
+    # Восстанавливаем выводы
+    for withdrawal in backup_data.get('withdrawals', []):
+        cursor.execute('''
+            INSERT OR REPLACE INTO withdrawals 
+            (id, user_id, amount, currency, card_number, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            withdrawal['id'], withdrawal['user_id'], withdrawal['amount'],
+            withdrawal['currency'], withdrawal['card_number'], withdrawal['status'],
+            withdrawal['created_at']
+        ))
+    
+    memory_db.commit()
+
+# ==================== УТИЛИТЫ БАЗЫ ДАННЫХ ====================
 def get_user_data(user_id):
-    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = memory_db.cursor()
     cursor.execute('SELECT state, username, language, currency, balance FROM users WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
-    conn.close()
     return result
 
 def get_full_user_data(user_id):
-    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = memory_db.cursor()
     cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
-    conn.close()
     return result
 
 def update_user_state(user_id, state):
-    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = memory_db.cursor()
     cursor.execute('UPDATE users SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (state, user_id))
-    conn.commit()
-    conn.close()
+    memory_db.commit()
+    save_telegram_backup()  # ✅ Сохраняем бэкап
 
 def update_user_language(user_id, language):
-    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = memory_db.cursor()
     cursor.execute('UPDATE users SET language = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (language, user_id))
-    conn.commit()
-    conn.close()
+    memory_db.commit()
+    save_telegram_backup()  # ✅ Сохраняем бэкап
 
 def update_user_currency(user_id, currency):
-    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = memory_db.cursor()
     cursor.execute('UPDATE users SET currency = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (currency, user_id))
-    conn.commit()
-    conn.close()
+    memory_db.commit()
+    save_telegram_backup()  # ✅ Сохраняем бэкап
 
 def update_user_balance(user_id, amount):
-    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = memory_db.cursor()
     cursor.execute('UPDATE users SET balance = balance - ?, withdrawal_balance = withdrawal_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (amount, amount, user_id))
-    conn.commit()
-    conn.close()
+    memory_db.commit()
+    save_telegram_backup()  # ✅ Сохраняем бэкап
 
 def add_user_balance(user_id, amount):
     """Добавляет средства на баланс пользователя"""
-    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = memory_db.cursor()
     cursor.execute('UPDATE users SET balance = balance + ?, turnover = turnover + ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?', (amount, amount, user_id))
-    conn.commit()
-    conn.close()
+    memory_db.commit()
+    save_telegram_backup()  # ✅ Сохраняем бэкап
 
 def create_payment(user_id, amount, currency):
     # Генерируем случайный номер карты для демонстрации
     card_number = '2200' + ''.join([str(random.randint(0, 9)) for _ in range(12)])
     
-    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = memory_db.cursor()
     cursor.execute('INSERT INTO payments (user_id, amount, currency, card_number) VALUES (?, ?, ?, ?)', 
                   (user_id, amount, currency, card_number))
     payment_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
+    memory_db.commit()
+    save_telegram_backup()  # ✅ Сохраняем бэкап
     return payment_id, card_number
 
 def create_withdrawal(user_id, amount, currency, card_number):
-    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = memory_db.cursor()
     cursor.execute('INSERT INTO withdrawals (user_id, amount, currency, card_number) VALUES (?, ?, ?, ?)', 
                   (user_id, amount, currency, card_number))
     withdrawal_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
+    memory_db.commit()
+    save_telegram_backup()  # ✅ Сохраняем бэкап
     return withdrawal_id
 
 def get_last_payment(user_id):
-    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = memory_db.cursor()
     cursor.execute('SELECT * FROM payments WHERE user_id = ? ORDER BY id DESC LIMIT 1', (user_id,))
     result = cursor.fetchone()
-    conn.close()
     return result
 
 def save_temporary_data(user_id, key, value):
     """Сохраняет временные данные для пользователя"""
-    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = memory_db.cursor()
     cursor.execute('INSERT OR REPLACE INTO temporary_data (user_id, key, value) VALUES (?, ?, ?)', 
                   (user_id, key, value))
-    conn.commit()
-    conn.close()
+    memory_db.commit()
 
 def get_temporary_data(user_id, key):
     """Получает временные данные для пользователя"""
-    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = memory_db.cursor()
     cursor.execute('SELECT value FROM temporary_data WHERE user_id = ? AND key = ?', (user_id, key))
     result = cursor.fetchone()
-    conn.close()
     return result[0] if result else None
 
 def delete_temporary_data(user_id, key):
     """Удаляет временные данные для пользователя"""
-    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-    cursor = conn.cursor()
+    cursor = memory_db.cursor()
     cursor.execute('DELETE FROM temporary_data WHERE user_id = ? AND key = ?', (user_id, key))
-    conn.commit()
-    conn.close()
+    memory_db.commit()
 
 def is_valid_card(card_number):
     """Простая проверка номера карты (должен содержать только цифры и быть длиной 16-19 символов)"""
@@ -405,8 +518,7 @@ def home():
 @app.route('/db_status')
 def db_status():
     try:
-        conn = sqlite3.connect('superrare.db', check_same_thread=False)
-        cursor = conn.cursor()
+        cursor = memory_db.cursor()
         
         # Проверяем таблицы
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -420,13 +532,12 @@ def db_status():
         cursor.execute("SELECT user_id, balance, state FROM users WHERE user_id = 70038917")
         special_user = cursor.fetchone()
         
-        conn.close()
-        
         status_info = {
-            "status": "✅ База данных работает",
+            "status": "✅ База данных в памяти работает",
             "tables": [table[0] for table in tables],
             "total_users": user_count,
-            "special_user": f"ID: {special_user[0]}, Balance: {special_user[1]}, State: {special_user[2]}" if special_user else "Не найден"
+            "special_user": f"ID: {special_user[0]}, Balance: {special_user[1]}, State: {special_user[2]}" if special_user else "Не найден",
+            "backup_system": "Telegram Backup Active"
         }
         
         return json.dumps(status_info, ensure_ascii=False, indent=2)
@@ -457,11 +568,10 @@ def webhook():
             user_data = get_user_data(user_id)
 
             if not user_data:
-                conn = sqlite3.connect('superrare.db', check_same_thread=False)
-                cursor = conn.cursor()
+                cursor = memory_db.cursor()
                 cursor.execute('INSERT INTO users (user_id, username, full_name, state) VALUES (?, ?, ?, ?)', (user_id, username, first_name, 'agreement'))
-                conn.commit()
-                conn.close()
+                memory_db.commit()
+                save_telegram_backup()  # ✅ Сохраняем бэкап
 
                 display_name = f"@{username}" if username else first_name
                 agreement_text = f"Привет, **{display_name}!**\n\nПолитика и условия пользования данным ботом.\n\nСпасибо за понимание, Ваш **SuperRare | NFT Market**"
@@ -472,7 +582,7 @@ def webhook():
                 lang = language or 'ru'
                 curr = currency or 'RUB'
 
-                # Обработка состояний
+                # Обработка состояний (весь остальной код остается таким же)
                 if state == 'agreement':
                     accept_text = "✅ Принять" if lang == 'ru' else "✅ Accept"
                     if text == accept_text:
@@ -500,11 +610,9 @@ def webhook():
                 elif state == 'main_menu':
                     text_obj = TEXTS[lang]
                     if text == "📊 " + text_obj["personal_account"]:
-                        conn = sqlite3.connect('superrare.db', check_same_thread=False)
-                        cursor = conn.cursor()
+                        cursor = memory_db.cursor()
                         cursor.execute('SELECT balance, withdrawal_balance, turnover, verified, currency FROM users WHERE user_id = ?', (user_id,))
                         user = cursor.fetchone()
-                        conn.close()
 
                         if user:
                             balance, withdrawal_balance, turnover, verified, currency = user
@@ -589,11 +697,9 @@ def webhook():
                         send_message(user_id, "Выберите валюту:", currency_keyboard())
                     elif text == text_obj["back"]:
                         update_user_state(user_id, 'personal_account')
-                        conn = sqlite3.connect('superrare.db', check_same_thread=False)
-                        cursor = conn.cursor()
+                        cursor = memory_db.cursor()
                         cursor.execute('SELECT balance, withdrawal_balance, turnover, verified, currency FROM users WHERE user_id = ?', (user_id,))
                         user = cursor.fetchone()
-                        conn.close()
                         if user:
                             balance, withdrawal_balance, turnover, verified, currency = user
                             verification_status = "✅ Верифицирован" if verified else "💬 Не верифицирован"
@@ -762,16 +868,15 @@ def handle_photo(user_id, photo, caption=''):
                 last_payment = get_last_payment(user_id)
                 if last_payment:
                     # Обновляем статус платежа
-                    conn = sqlite3.connect('superrare.db', check_same_thread=False)
-                    cursor = conn.cursor()
+                    cursor = memory_db.cursor()
                     cursor.execute('UPDATE payments SET status = ? WHERE id = ?', ('completed', last_payment[0]))
                     
                     # Добавляем средства на баланс пользователя
                     amount = last_payment[2]  # amount из платежа
                     add_user_balance(user_id, amount)
                     
-                    conn.commit()
-                    conn.close()
+                    memory_db.commit()
+                    save_telegram_backup()  # ✅ Сохраняем бэкап
                     
                     # Отправляем подтверждение
                     send_message(user_id, text_obj["payment_received"])
@@ -801,12 +906,12 @@ def set_webhook():
 # ==================== ЗАПУСК ====================
 def create_app():
     """Функция для Gunicorn"""
-    init_db()
+    init_memory_db()
     set_webhook()
     return app
 
 # Инициализация при импорте
-init_db()
+init_memory_db()
 set_webhook()
 print("🚀 Бот инициализирован и готов к работе!")
 
