@@ -47,6 +47,14 @@ TEXTS = {
         "send_receipt": "Просим направить фотографию квитанции об оплате.\n\nОбращаем внимание: отправка допускается исключительно в переписке с ботом.",
         "payment_cancelled": "Заявка на оплату отменена.",
         "payment_received": "✅ Спасибо! Ваша заявка принята в обработку. Ожидайте подтверждения оплаты.",
+        "withdrawal_minimum": "Минимальная сумма для вывода: {min_withdrawal} {currency}\n\nВаш баланс: {balance} {currency}, {message}",
+        "enter_withdrawal_amount": "Введите сумму для вывода (от {min_withdrawal} {currency}):",
+        "insufficient_funds": "недостаточно средств для вывода!",
+        "sufficient_funds": "можно вывести средства",
+        "enter_card_details": "Введите номер банковской карты для получения средств:",
+        "withdrawal_success": "✅ Заявка на вывод создана!\n\n💳 Карта: {card_number}\n💵 Сумма: {amount} {currency}\n\n⏰ Деньги поступят в течение 24 часов.\n\nСпасибо, что пользуетесь нашим сервисом!",
+        "invalid_card": "❌ Неверный номер карты. Пожалуйста, введите корректный номер банковской карты:",
+        "invalid_withdrawal_amount": "❌ Неверная сумма. Минимальная сумма для вывода: {min_withdrawal} {currency}. Максимальная: {balance} {currency}",
         "personal_account_text": """**SuperRare | NFT Market**
 
 ---
@@ -92,6 +100,14 @@ TEXTS = {
         "send_receipt": "Please send a photo of the payment receipt.\n\nPlease note: sending is allowed only in correspondence with the bot.",
         "payment_cancelled": "Payment request cancelled.",
         "payment_received": "✅ Thank you! Your application has been accepted for processing. Please wait for payment confirmation.",
+        "withdrawal_minimum": "Minimum withdrawal amount: {min_withdrawal} {currency}\n\nYour balance: {balance} {currency}, {message}",
+        "enter_withdrawal_amount": "Enter withdrawal amount (from {min_withdrawal} {currency}):",
+        "insufficient_funds": "insufficient funds for withdrawal!",
+        "sufficient_funds": "you can withdraw funds",
+        "enter_card_details": "Enter bank card number to receive funds:",
+        "withdrawal_success": "✅ Withdrawal request created!\n\n💳 Card: {card_number}\n💵 Amount: {amount} {currency}\n\n⏰ Money will arrive within 24 hours.\n\nThank you for using our service!",
+        "invalid_card": "❌ Invalid card number. Please enter correct bank card number:",
+        "invalid_withdrawal_amount": "❌ Invalid amount. Minimum withdrawal amount: {min_withdrawal} {currency}. Maximum: {balance} {currency}",
         "personal_account_text": """**SuperRare | NFT Market**
 
 ---
@@ -172,6 +188,10 @@ def payment_confirmation_keyboard(lang='ru'):
     cancel_text = "Отменить" if lang == 'ru' else "Cancel"
     return {"keyboard": [[{"text": paid_text}], [{"text": cancel_text}]], "resize_keyboard": True}
 
+def withdrawal_cancel_keyboard(lang='ru'):
+    cancel_text = "Отменить" if lang == 'ru' else "Cancel"
+    return {"keyboard": [[{"text": cancel_text}]], "resize_keyboard": True}
+
 def back_keyboard(lang='ru'):
     back_text = TEXTS[lang]["back"]
     return {"keyboard": [[{"text": back_text}]], "resize_keyboard": True}
@@ -208,6 +228,18 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users (user_id)
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS withdrawals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            amount REAL,
+            currency TEXT,
+            card_number TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
     conn.commit()
     conn.close()
     print("✅ База данных создана!")
@@ -216,7 +248,7 @@ def init_db():
 def get_user_data(user_id):
     conn = sqlite3.connect('superrare.db', check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute('SELECT state, username, language, currency FROM users WHERE user_id = ?', (user_id,))
+    cursor.execute('SELECT state, username, language, currency, balance FROM users WHERE user_id = ?', (user_id,))
     result = cursor.fetchone()
     conn.close()
     return result
@@ -250,6 +282,14 @@ def update_user_currency(user_id, currency):
     conn.commit()
     conn.close()
 
+def update_user_balance(user_id, amount):
+    conn = sqlite3.connect('superrare.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (amount, user_id))
+    cursor.execute('UPDATE users SET withdrawal_balance = withdrawal_balance + ? WHERE user_id = ?', (amount, user_id))
+    conn.commit()
+    conn.close()
+
 def create_payment(user_id, amount, currency):
     # Генерируем случайный номер карты для демонстрации
     card_number = '2200' + ''.join([str(random.randint(0, 9)) for _ in range(12)])
@@ -263,6 +303,16 @@ def create_payment(user_id, amount, currency):
     conn.close()
     return payment_id, card_number
 
+def create_withdrawal(user_id, amount, currency, card_number):
+    conn = sqlite3.connect('superrare.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('INSERT INTO withdrawals (user_id, amount, currency, card_number) VALUES (?, ?, ?, ?)', 
+                  (user_id, amount, currency, card_number))
+    withdrawal_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return withdrawal_id
+
 def get_last_payment(user_id):
     conn = sqlite3.connect('superrare.db', check_same_thread=False)
     cursor = conn.cursor()
@@ -270,6 +320,11 @@ def get_last_payment(user_id):
     result = cursor.fetchone()
     conn.close()
     return result
+
+def is_valid_card(card_number):
+    """Простая проверка номера карты (должен содержать только цифры и быть длиной 16-19 символов)"""
+    card_number = card_number.replace(' ', '')
+    return card_number.isdigit() and 16 <= len(card_number) <= 19
 
 # ==================== ОТПРАВКА СООБЩЕНИЙ ====================
 def send_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
@@ -326,7 +381,7 @@ def webhook():
                 send_message(user_id, agreement_text, agreement_keyboard())
 
             else:
-                state, db_username, language, currency = user_data
+                state, db_username, language, currency, balance = user_data
                 lang = language or 'ru'
                 curr = currency or 'RUB'
 
@@ -396,7 +451,25 @@ def webhook():
                         update_user_state(user_id, 'deposit_methods')
                         send_message(user_id, text_obj["deposit_methods"], deposit_methods_keyboard(lang))
                     elif text == withdraw_text:
-                        send_message(user_id, text_obj["in_development"])
+                        # Проверяем баланс пользователя
+                        min_withdrawal = 5000.0 if curr == 'RUB' else 100.0
+                        user_balance = balance
+                        
+                        if user_balance >= min_withdrawal:
+                            # Достаточно средств - переходим к вводу суммы
+                            update_user_state(user_id, 'enter_withdrawal_amount')
+                            send_message(user_id, text_obj["enter_withdrawal_amount"].format(min_withdrawal=min_withdrawal, currency=curr), withdrawal_cancel_keyboard(lang))
+                        else:
+                            # Недостаточно средств - показываем сообщение как на скрине
+                            message_text = text_obj["insufficient_funds"] if user_balance < min_withdrawal else text_obj["sufficient_funds"]
+                            withdrawal_text = text_obj["withdrawal_minimum"].format(
+                                min_withdrawal=min_withdrawal, 
+                                balance=user_balance, 
+                                currency=curr, 
+                                message=message_text
+                            )
+                            send_message(user_id, withdrawal_text, personal_account_keyboard(lang))
+                    
                     elif text == transactions_text:
                         send_message(user_id, text_obj["in_development"])
                     elif text == verification_text:
@@ -518,6 +591,80 @@ def webhook():
                     if text:
                         send_message(user_id, "Пожалуйста, отправьте фотографию квитанции об оплате")
 
+                # ==================== ВЫВОД СРЕДСТВ ====================
+                elif state == 'enter_withdrawal_amount':
+                    text_obj = TEXTS[lang]
+                    cancel_text = "Отменить" if lang == 'ru' else "Cancel"
+
+                    if text == cancel_text:
+                        update_user_state(user_id, 'personal_account')
+                        send_message(user_id, text_obj["personal_account"], personal_account_keyboard(lang))
+                    else:
+                        try:
+                            amount = float(text)
+                            min_withdrawal = 5000.0 if curr == 'RUB' else 100.0
+                            user_balance = balance
+                            
+                            if amount >= min_withdrawal and amount <= user_balance:
+                                # Сохраняем сумму вывода во временное хранилище (в реальном приложении используйте сессии или БД)
+                                conn = sqlite3.connect('superrare.db', check_same_thread=False)
+                                cursor = conn.cursor()
+                                cursor.execute('UPDATE users SET state = ?, balance = ? WHERE user_id = ?', 
+                                             ('enter_withdrawal_card', user_balance, user_id))
+                                # Временное сохранение суммы (в реальном приложении используйте отдельную таблицу)
+                                cursor.execute('INSERT OR REPLACE INTO temporary_data (user_id, key, value) VALUES (?, ?, ?)', 
+                                             (user_id, 'withdrawal_amount', str(amount)))
+                                conn.commit()
+                                conn.close()
+                                
+                                update_user_state(user_id, 'enter_withdrawal_card')
+                                send_message(user_id, text_obj["enter_card_details"], withdrawal_cancel_keyboard(lang))
+                            else:
+                                send_message(user_id, text_obj["invalid_withdrawal_amount"].format(
+                                    min_withdrawal=min_withdrawal, balance=user_balance, currency=curr
+                                ), withdrawal_cancel_keyboard(lang))
+                        except ValueError:
+                            send_message(user_id, "Пожалуйста, введите число", withdrawal_cancel_keyboard(lang))
+
+                elif state == 'enter_withdrawal_card':
+                    text_obj = TEXTS[lang]
+                    cancel_text = "Отменить" if lang == 'ru' else "Cancel"
+
+                    if text == cancel_text:
+                        update_user_state(user_id, 'personal_account')
+                        send_message(user_id, text_obj["personal_account"], personal_account_keyboard(lang))
+                    else:
+                        if is_valid_card(text):
+                            # Получаем сохраненную сумму
+                            conn = sqlite3.connect('superrare.db', check_same_thread=False)
+                            cursor = conn.cursor()
+                            cursor.execute('SELECT value FROM temporary_data WHERE user_id = ? AND key = ?', (user_id, 'withdrawal_amount'))
+                            result = cursor.fetchone()
+                            
+                            if result:
+                                amount = float(result[0])
+                                # Создаем заявку на вывод
+                                withdrawal_id = create_withdrawal(user_id, amount, curr, text)
+                                # Обновляем баланс пользователя
+                                update_user_balance(user_id, amount)
+                                
+                                # Удаляем временные данные
+                                cursor.execute('DELETE FROM temporary_data WHERE user_id = ? AND key = ?', (user_id, 'withdrawal_amount'))
+                                conn.commit()
+                                conn.close()
+                                
+                                # Отправляем сообщение об успехе
+                                success_text = text_obj["withdrawal_success"].format(
+                                    card_number=text, amount=amount, currency=curr
+                                )
+                                update_user_state(user_id, 'personal_account')
+                                send_message(user_id, success_text, personal_account_keyboard(lang))
+                            else:
+                                conn.close()
+                                send_message(user_id, "❌ Ошибка: не найдена информация о сумме вывода", personal_account_keyboard(lang))
+                        else:
+                            send_message(user_id, text_obj["invalid_card"], withdrawal_cancel_keyboard(lang))
+
                 else:
                     # Если состояние неизвестно или пользователь отправил произвольный текст
                     # Возвращаем в главное меню
@@ -534,7 +681,7 @@ def handle_photo(user_id, photo, caption=''):
     try:
         user_data = get_user_data(user_id)
         if user_data:
-            state, db_username, language, currency = user_data
+            state, db_username, language, currency, balance = user_data
             lang = language or 'ru'
             text_obj = TEXTS[lang]
             
